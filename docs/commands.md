@@ -2,34 +2,48 @@
 
 Every `hive` subcommand, in one table. Run `hive --help` for the same list from the shell.
 
+Commands that parse arguments reject unknown flags. To pass positional text that starts with `-`, put it after `--`.
+
 | Command | What it does |
 |---|---|
-| `hive --version` | Print the version, short sha, and dirty marker this build was stamped with. It reads a cached npm update result when one is fresh. |
+| `hive --version` | Print the version, short sha, and dirty marker this build was stamped with. It reads a cached npm update result when one is fresh. The MCP server reports the same version in its initialize handshake. |
 | `hive --version --check` | Ask npm for the latest published version, cache the result for 24 hours, and print whether this build is current |
 | `hive` / `hive lead [path] [--no-dashboard] [--detach]` | Start, or reattach to, this project's lead session; `--detach` starts or adopts the lead and prints its pane and attach command without attaching |
 | `hive queen` | Start, or reattach to, the queen: one lead per data dir that reads every registered project and writes into another one only through its lead (todos, comments, and text or wakes addressed to that lead). The first run creates `<data dir>/queen` with a `hive.yml` selecting the shipped `queen` profile. See [the queen guide](queen.md#start-it). |
-| `hive queen-audit [--project-id <id>] [--limit <n>] [--json]` | List confirmed queen writes, newest first, for 30 days with a 20,000 id-range backstop. The queen can filter any target; other callers see their own project. Default 20, maximum 100. A crash after a terminal send but before its audit insert can leave that send unrecorded. See [the queen guide](queen.md#the-audit-trail). |
+| `hive queen-audit [--project-id <id>] [--limit <n>] [--json]` | List confirmed queen writes and refused cross-project guard calls, newest first, for 30 days with a 20,000 id-range backstop. Refusals include their problem text. The queen can filter any target; other callers see their own project. Default 20, maximum 100. A crash after a terminal send but before its audit insert can leave that send unrecorded. See [the queen guide](queen.md#the-audit-trail). |
 | `hive init [path]` | Set up a project: writes `hive.yml`, picks a profile, seeds the board pad, and registers the checkout it is pointed at even under a registered parent |
 | `hive attach` | Attach to the project's tmux session without opening a lead |
-| `hive start <name>` | Start a `hive.yml` process by hand |
+| `hive start <name>` | Start a `hive.yml` process by hand. Exits non-zero when the process is untrusted, refused or fails to start |
 | `hive stop <name>` / `hive stop --all` | Stop one running process, or every one in this project |
 | `hive show <name>` | Move a running process's pane beside the lead |
 | `hive hide <name>` | Move it back into the project's `processes` window |
+| `hive layout` | Gather this project's live worker panes into the lead window and restore the merged `hive.yml` layout; leaves unrelated panes where they are. It does nothing when `placement: window` is set in `hive.yml`, and changes nothing when it cannot verify the lead pane or probe tmux |
 | `hive status` | Every project's agents, commands, todos, and wake-ups, in one shot |
-| `hive portfolio [--json]` | One row per registered project: lane (waiting on you, stuck, moving, quiet) with its reasons (a project with live work stays moving and keeps its needs-human and blocked counts; a pending wake never counts as movement, and a held wake is never overdue), lead and worker state, todo and wake counts, and the todos tagged `needs-human`. Read-only; `--json` prints the same data as one object. See [the queen guide](queen.md#the-portfolio). |
-| `hive next [--print]` | Attach to the lead of the one project that needs you most. Projects waiting on you come first, ranked by needs-human count, then oldest activity, then project id. Stuck projects come next, and so do moving projects holding a needs-human item, all ranked by needs-human count first, then in-progress todos that are blocked, overdue wakes, workers needing input, oldest activity, then project id. It skips the project rooted at `<dataDir>/queen`. Every lead state except unknown goes through `hive lead --detach` first, which adopts a live lead and restarts a dead or reissued one. `--print` prints the choice as one JSON line and starts and attaches nothing; with nothing waiting it prints one line saying so and exits 0. See [the queen guide](queen.md#jump-to-the-project-that-needs-you). |
+| `hive portfolio [--json]` | One row per registered project: lane (waiting on you, stuck, moving, quiet) with its reasons (a project with live work stays moving and keeps its active `needs-human` and blocked counts; a pending question counts as a wait when no hard stall or moving work takes precedence; a pending wake never counts as movement, and a held wake is never overdue), lead and worker state, todo, pending question and wake counts, and the active todos tagged `needs-human`. Read-only; `--json` prints the same data as one object. See [the queen guide](queen.md#the-portfolio). |
+| `hive next [--print]` | Attach to the lead of the one project that needs you most. Projects waiting on you come first, ranked by the combined count of active `needs-human` todos and pending questions, then oldest activity, then project id. Stuck projects and moving projects holding either kind of wait are also candidates. Candidates with a wait rank before stuck projects without one; they are ranked by the combined count, then in-progress todos that are blocked, overdue wakes, workers needing input, oldest activity, then project id. It skips the project rooted at `<dataDir>/queen`. Every lead state except unknown goes through `hive lead --detach` first, which adopts a live lead and restarts a dead or reissued one. `--print` prints the choice as one JSON line and starts and attaches nothing; with nothing waiting it prints one line saying so and exits 0. See [the queen guide](queen.md#jump-to-the-project-that-needs-you). |
 | `hive upgrade` | Update a global npm install and re-pin; in a checkout, print the recipe only |
 | `hive upgrade --check` | Preview the commands without changing your install or update cache |
 | `hive setup --harness <name>` | Print registration and configuration instructions for `claude` (default) or `codex`; preserve existing harness settings |
 | `hive upgrade --run` | Run a checkout’s pull/install/build/setup recipe, stopping at the first failure |
 | `hive setup` | Pin the `hive` command to the interpreter that built it |
-| `hive doctor` | Check the environment and sweep stale state |
-| `hive pads` / `hive pad <name>` | List pads, or print (and edit) one from the shell |
+| `hive doctor` | Check the environment and sweep stale state. It also lists MCP servers using this data dir that started before the store's newest migration, with the pid, start time and parent, and tells you to restart that session. It warns when the tmux server environment carries `NO_COLOR`, which makes `agent_send` refuse and wakes hold (see [tmux settings](tmux.md#what-hive-needs)). It stops nothing |
+| `hive pads` / `hive pad <name>` | List or print a pad; `--export` writes a revision-stamped file, `--edit` opens it, and `--save [file] [--revision <n>]` saves with a revision guard |
 | `hive todos` / `hive todo <id>` | List todos, or print one in full |
+| `hive questions [--json]` | List pending questions followed by defaulted questions, with their defaults and choices; JSON returns the same records |
+| `hive answer <id> <answer> [--notes <text>]` | Record one answer and notes; use `--` before an answer that starts with a dash; report the wake id when queued or the reason delivery was skipped. When the asker has no running row, the wake goes to the project's running lead if it is a different actor |
 | `hive backups` / `hive restore <name>` | List store snapshots, or restore one |
 | `hive project rm <id\|path> [--yes]` | Remove another registered project and everything it owns, after a snapshot. Takes an id or an exact registered path, never the project you are in. See [removing a project](projects.md#removing-a-project) |
 | `hive runbook` | Print this project's standing process |
 | `hive posture` | Print the posture your lead is running with |
 | `hive profile list` | Show the profiles hive can see |
 | `hive kickoff --explain` | Check whether a session here gets the session-start injection |
+| `hive crew --json` | Print one JSON snapshot of this project's workers, todos, pending question count and wakes. Read-only: it runs no janitor and writes nothing. See [crew.md](crew.md). |
+| `hive crew-restore [--dry-run] [--json]` | Resume this project's workers marked pending after confirmed pane loss. Per-row output covers recovery candidates and their blockers; historical, excluded and parked rows are counted but not listed. JSON includes `not_considered`, the numeric count of omitted rows. Dry run makes no changes, and the command does not replay the previous assignment. See [projects.md](projects.md#recovering-a-worker-after-pane-loss). |
 | `hive statusline` | One-line store summary for Claude Code's status line |
+| `hive lead-handoff [--request <id>] --pad <id> --revision <n>` | Run by a lead to start its own handoff, or to answer an automatic request with `--request`: checks the persisted `hive-lead-handoff` pad and arms a short grace period, after which hive restarts the lead's pane with a fresh session. Any human input during the grace postpones it |
+
+Manual handoff requires a Claude lead. Hive waits on Claude Code’s Stop-hook background-task evidence, which Codex leads do not provide. A Codex lead receives a refusal before any request is created.
+
+Without `--request`, the command creates a manual request for the lead’s current pane and session. It works without a turn budget and with `auto_handoff: false`. Write the active `hive-lead-handoff` pad first, then pass its id and current revision. An existing active handoff is refused by id and state. The command reports live non-artifact background tasks from the last Stop; grace waits for them and postpones after 10 minutes if they remain. Human input also postpones grace. Refresh the pad and answer the retry request with `--request` to try again.
+
+There is no CLI command that completes a todo. MCP callers use `todo_complete` or `todo_update`; if the project sets `completion_gate`, `hive lead` reviews that command at startup through the existing interactive command approval.

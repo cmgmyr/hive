@@ -3,8 +3,11 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { CLOSED_ROW_ORDER, findAgent, getAgentRow, notOwnedError, observeOwnership, probeFailed, PROBE_FAILED_NOTE, REISSUED_PANE_NOTE, summaryLiveness, UNVERIFIED_OWNERSHIP_NOTE, type AgentRow } from "../agentRecords.js";
+export { CLOSED_ROW_ORDER, findAgent, getAgentRow, notOwnedError, observeOwnership, probeFailed, PROBE_FAILED_NOTE, REISSUED_PANE_NOTE, summaryLiveness, UNVERIFIED_OWNERSHIP_NOTE, type AgentRow } from "../agentRecords.js";
+
 import { confirmQueenWrite } from "../queenAudit.js";
-import { captureQueenWriteIdentity } from "../context.js";
+import { captureQueenWriteIdentity, resolveQueenLeadTarget } from "../context.js";
 import {
   agentBriefPath,
   mergedBriefVars,
@@ -13,13 +16,13 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile, refreshCodexMcpEnv } from "../codexHome.js";
+import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile, findCodexFork, readCodexForkSeed, refreshCodexMcpEnv, seedCodexFork } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import {
   commandHead,
   harnessFor,
   harnessNames, readOnlyExtraArgsAllowed,
-  paneClassifierFor,
+  paneClassifierFor, type PaneClassifier,
   resolvedCommandPrefix,
   screenClassifiable,
 } from "../harnesses.js";
@@ -27,6 +30,7 @@ import { ensureWorkerHooksFile } from "../hooks.js";
 import { activeProfile, allowedAgents, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
   classifyMiss,
+  DELIVERY_FIELDS,
   LEAD_MESSAGE_THRESHOLD,
   leadPointerMarker,
   missMessage,
@@ -36,31 +40,38 @@ import {
   shortenedSendNote,
   storeLeadMessage,
 } from "../leadMessage.js";
+import { sendQuietLeadMessage, sendUsageHeldMessage } from "../leadMessageDelivery.js";
+import { observeUsageLimit, usageLimitGate } from "../usageLimit.js";
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
   agentIdentityEnv,
   branchAt,
   closeAgentRow,
+  closeAgentRowWithLeases,
   currentOwnership,
   discardOrphanedPane,
   isReservedAgentName,
   isRunningLeadActor,
   killAgentPane,
+  killAgentPaneWithoutRelayout,
   launchAgent,
   LEAD_KIND,
   PaneOwnershipLost,
   paneIdentity,
-  parkAgentRow,
+  parkAgentRowWithLeases,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
   releaseParkRow,
+  relayoutAfterPaneLeft,
   renameAgent,
-  resumeAgent,
   storedLaunchOptions,
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
+import { markWorkerRetirementIntent } from "../workerRecovery.js";
+import { workerPaneEnvironment, refuseLimitedHarness, resumeWorker } from "../agentResume.js";
 import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
+import { leadSessionEnded } from "../leadState.js";
 import {
   capturePane,
   captureFinalScreen,
@@ -89,7 +100,7 @@ import {
   TmuxTimeoutError,
   WINDOW_LAYOUTS,
   type AliveSnapshot,
-  type InputBoxState,
+  type InputBoxSnapshot, type InputBoxState,
   type Liveness,
   type RowOwnership,
 } from "../tmux.js";
@@ -102,56 +113,10 @@ import {
   type LastLogEvent,
 } from "../stateProvenance.js";
 
-export interface AgentRow {
-  id: number;
-  project_id: number;
-  actor_id: string;
-  name: string;
-  tmux_target: string;
-  tmux_socket: string;
-  pane_pid: string;
-  command: string;
-  cwd: string;
-  parent_actor_id: string | null;
-  status: string;
-  created_at: string;
-  closed_at: string | null;
-  agent_state: string;
-  state_changed_at: string | null;
-  kind: string;
-  session_id: string;
-  transcript_path: string;
-  parked_at: string;
-  parked_branch: string;
-  resumed_at: string;
-  codex_home: string;
-  exit_tail: string;
-  model: string | null;
-  extra_args: string | null;
-}
+const unknownOwnershipNote = (snapshot: AliveSnapshot | null): string =>
+  observationFailed(snapshot) ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE;
 
-const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
-
-function closedAgentNamed(
-  projectId: number,
-  needle: string,
-): { id: number; name: string; kind: string; parked_at: string } | undefined {
-  return (
-    db
-      .prepare(
-        `SELECT id, name, kind, parked_at FROM agents WHERE project_id = ? AND status != 'running' ORDER BY ${CLOSED_ROW_ORDER}`,
-      )
-      .all(projectId) as { id: number; name: string; kind: string; parked_at: string }[]
-  ).find((r) => r.name.toLowerCase() === needle);
-}
-
-function getAgentRow(projectId: number, id: number, notFoundHint: string): AgentRow {
-  const row = db.prepare("SELECT * FROM agents WHERE project_id = ? AND id = ?").get(projectId, id) as
-    | AgentRow
-    | undefined;
-  if (!row) throw new Error(`No agent ${id} in project ${projectId}. ${notFoundHint}`);
-  return row;
-}
+class UsageLimitActive extends Error {}
 
 export type LostCasReport = { outcome: "retired"; parked: boolean } | { outcome: "revived" };
 
@@ -166,54 +131,6 @@ function revivedError(agent: { id: number; name: string }, live: boolean, cause:
       (live ? " after this call's kill-pane took the old one down" : "") +
       `. ${remedy}`,
   );
-}
-
-export function findAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
-  if (ref.agent_id != null) {
-    return getAgentRow(projectId, ref.agent_id, "Call agent_list.");
-  }
-  if (ref.name) {
-    const rows = db
-      .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
-      .all(projectId) as AgentRow[];
-
-    const exact = rows.filter((r) => r.name === ref.name);
-    if (exact.length === 1) return exact[0];
-    if (exact.length > 1) {
-      throw new Error(`Multiple running agents named "${ref.name}". Target by agent_id instead.`);
-    }
-
-    const needle = ref.name.toLowerCase();
-    const sameName = rows.filter((r) => r.name.toLowerCase() === needle);
-    if (sameName.length === 1) return sameName[0];
-
-    const closed = closedAgentNamed(projectId, needle);
-    if (closed) {
-
-      if (closed.parked_at) {
-        throw new Error(
-          `Agent ${closed.id} ("${closed.name}") is PARKED, not finished - it was paused on ` +
-            `${closed.parked_at} and its session is waiting. Bring it back with agent_resume(agent_id: ` +
-            `${closed.id}), or abandon the park with agent_close(agent_id: ${closed.id}).`,
-        );
-      }
-      const remedy = closed.kind === LEAD_KIND ? "Run `hive lead` to start a new one" : "Spawn a new worker";
-      throw new Error(
-        `Agent ${closed.id} ("${closed.name}") is closed. ${remedy}, or target a running one by name or agent_id.`,
-      );
-    }
-
-    const partial = rows.filter((r) => r.name.toLowerCase().includes(needle));
-    if (partial.length === 1) return partial[0];
-    if (partial.length > 1) {
-      const candidates = partial.map((r) => `${r.name} (agent_id ${r.id})`).join(", ");
-      throw new Error(
-        `"${ref.name}" matches ${partial.length} running agents: ${candidates}. Use the full name or agent_id.`,
-      );
-    }
-    throw new Error(`No running agent matching "${ref.name}" in project ${projectId}. Call agent_list.`);
-  }
-  throw new Error("Pass agent_id or name.");
 }
 
 function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
@@ -275,6 +192,7 @@ function buildParkReceipt(
   parkedAt: string,
   branch: string,
   note?: string,
+  releasedLeases: string[] = [],
 ) {
   const todoIds = laneTodoIds(project.id, agent.actor_id);
   return {
@@ -287,6 +205,7 @@ function buildParkReceipt(
     session_id: agent.session_id,
     todo_ids: todoIds,
     board_line: parkedBoardLine({ parkedAt, name: agent.name, agentId: agent.id, branch, cwd: agent.cwd, todoIds }),
+    ...(releasedLeases.length > 0 ? { released_leases: releasedLeases } : {}),
     ...(note ? { note } : {}),
   };
 }
@@ -305,6 +224,24 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
     );
   }
   if (agent.status !== "running") {
+    if (agent.kind === "agent" && agent.recovery_state === "pending") {
+      if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+        throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
+      }
+      let releasedHome: boolean | null = null;
+      if (agent.codex_home) {
+        try {
+          releasedHome = reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+        } catch {
+
+        }
+      }
+      return {
+        ...receipt,
+        ...(agent.parked_at ? { parked: true } : {}),
+        note: pendingRecoveryAbandonmentNote(agent.id, agent.codex_home, releasedHome),
+      };
+    }
     return {
       ...receipt,
       ...(agent.parked_at ? { parked: true } : {}),
@@ -321,7 +258,11 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
           : "Use agent_close without row_only to stop it."),
     );
   }
-  if (!closeAgentRow(agent.id, paneIdentity(agent))) {
+  if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+    throw new Error(`Agent ${agent.id} changed before row-only retirement. Nothing was changed.`);
+  }
+  const closed = closeAgentRowWithLeases(agent.id, paneIdentity(agent), { releaseLeases: false });
+  if (!closed.closed) {
     const after = getAgentRow(agent.project_id, agent.id, "Call agent_list(include_closed: true).");
     if (after.status !== "running") {
       return {
@@ -337,47 +278,30 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
   }
   return {
     ...receipt,
+    ...(closed.released_leases.length > 0 ? { released_leases: closed.released_leases } : {}),
     note:
       `Row retired with no kill, stop or typing; its pane ownership read ${ownership}.` +
       (ownership === "unknown" ? " Anything still running in that pane was left alone." : ""),
   };
 }
 
-export const PROBE_FAILED_NOTE =
-  "tmux could not be probed, so liveness is unknown. Nothing was changed. Retry in a few seconds.";
+function pendingRecoveryAbandonmentNote(agentId: number, codexHome: string, releasedHome: boolean | null): string {
+  const row = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(agentId) as
+    | { status: string; recovery_state: string }
+    | undefined;
+  if (row?.status === "running") return "A concurrent resume now owns the row; no Codex home was released.";
 
-const unknownOwnershipNote = (snapshot: AliveSnapshot | null): string =>
-  observationFailed(snapshot) ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE;
-
-const UNVERIFIED_OWNERSHIP_NOTE =
-  "This row's pane cannot be verified as its own: it is on another tmux socket, or no pane pid was recorded for it, so liveness is unknown and no screen was read. Nothing was changed. If the row is stale, a human or peer lead can retire it with agent_close(row_only=true).";
-
-export const probeFailed = (agent: AgentRow) =>
-  new Error(`Agent ${agent.id} ("${agent.name}"): ${PROBE_FAILED_NOTE}`);
-
-// A failed probe throws rather than answering unknown, so callers keep the retry wording.
-export function observeOwnership(agent: AgentRow): RowOwnership {
-  const ownership = observeRowOwnership(agent);
-  if (ownership === "probe-failed") throw probeFailed(agent);
-  return ownership;
-}
-
-export const REISSUED_PANE_NOTE =
-  "Its recorded pane id now belongs to a different process (the recorded pane pid no longer matches), so its own process is gone and the pane is someone else's. Nothing was typed, read or killed there.";
-
-export function notOwnedError(agent: AgentRow, ownership: Exclude<RowOwnership, "live">): Error {
-  const who = `Agent ${agent.id} ("${agent.name}")`;
-  if (ownership === "gone") {
-    return new Error(
-      `${who} has no live tmux window (its process exited or the window was killed). Close it with agent_close and spawn a new one.`,
-    );
-  }
-  if (ownership === "reissued") {
-    return new Error(
-      `${who}: pane ownership reads reissued. ${REISSUED_PANE_NOTE} Close the row with agent_close, which retires it without touching that pane.`,
-    );
-  }
-  return new Error(`${who}: pane ownership reads unknown. ${UNVERIFIED_OWNERSHIP_NOTE}`);
+  const stateNote = row?.recovery_state === "excluded"
+    ? "The recovery marker changed to excluded"
+    : "The recovery marker could not be changed to excluded";
+  const homeNote = !codexHome
+    ? "no Codex home was associated with this row and none was released"
+    : releasedHome === true
+      ? "the Codex home directory existed and was released"
+      : releasedHome === false
+        ? "no Codex home directory existed to release"
+        : "the Codex home was not released because the row changed";
+  return `${stateNote}; ${homeNote}.`;
 }
 
 // Rechecked just before a kill. "changed" skips the kill and lets the row CAS report the race.
@@ -472,6 +396,64 @@ function stripSessionArgs(args: string[]): string[] {
   return stripped;
 }
 
+function effortForAgent(agent: AgentRow, harness: string): string | undefined {
+  const args = storedLaunchOptions(agent.extra_args).args;
+  if (harness === "claude") {
+    for (let i = args.length - 1; i >= 0; i--) {
+      if (args[i].startsWith("--effort=")) return args[i].slice("--effort=".length);
+      if (args[i] === "--effort" && i + 1 < args.length) return args[i + 1];
+    }
+    return undefined;
+  }
+  for (let i = args.length - 1; i >= 0; i--) {
+    const value = args[i] === "-c" ? args[i + 1] : args[i].startsWith("-c") ? args[i].slice(2) : args[i];
+    const match = /^model_reasoning_effort=(low|medium|high|xhigh)$/.exec(value ?? "");
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+function effortArgs(harness: string, effort: string | undefined): string[] {
+  if (!effort) return [];
+  const allowed = harness === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh"];
+  if (!allowed.includes(effort)) throw new Error(`effort "${effort}" is not supported by ${harness}.`);
+  return harness === "claude" ? ["--effort", effort] : ["-c", `model_reasoning_effort=${effort}`];
+}
+
+async function waitForCodexFork(
+  childKey: string,
+  sourceSessionId: string,
+  deadline: number,
+): Promise<{ sessionId: string; transcriptPath: string } | null> {
+  while (Date.now() < deadline) {
+    const found = findCodexFork(childKey, sourceSessionId);
+    if (found) return found;
+    await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
+  }
+  return findCodexFork(childKey, sourceSessionId);
+}
+
+function retireForkChild(projectId: number, childId: number): void {
+  const child = getAgentRow(projectId, childId, "Check agent_list(include_closed: true).");
+  if (child.status !== "running") return;
+  const ownership = observeOwnership(child);
+  if (ownership === "unknown") {
+    throw new Error(`Fork child agent_id ${child.id} is retained because its pane ownership is unknown.`);
+  }
+  const live = ownership === "live" && stillOwnsPane(child, "agent_fork cleanup");
+  if (live) killAgentPane(child.tmux_target);
+  if (!closeAgentRow(child.id, paneIdentity(child))) {
+    const after = getAgentRow(projectId, child.id, "Check agent_list(include_closed: true).");
+    if (after.status !== "closed") {
+      throw new Error(`Fork child agent_id ${child.id} changed during cleanup and is retained for recovery.`);
+    }
+  }
+  if (child.codex_home) {
+    const closed = getAgentRow(projectId, child.id, "Check agent_list(include_closed: true).");
+    if (closed.codex_home) reapCodexHomeForClosedAgent(child.id, closed.codex_home);
+  }
+}
+
 function requestsExistingSession(extraArgs: string[] | undefined): boolean {
   return (extraArgs ?? []).some(
     (arg) =>
@@ -504,12 +486,6 @@ function nextWorkerName(projectId: number): string {
 }
 
 const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
-
-export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Liveness {
-
-  if (row.status !== "running") return false;
-  return ownershipLiveness(rowOwnership(row, snapshot));
-}
 
 function capturePaneQuietly(target: string): string {
   try {
@@ -564,7 +540,7 @@ function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<st
 }
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
-  const alive = summaryLiveness(row, snapshot);
+  const { alive, dormant } = row.kind === LEAD_KIND ? leadSummaryLiveness(row, snapshot) : { alive: summaryLiveness(row, snapshot), dormant: null };
 
   const { state, ...provenance } = deriveProvenance(row, alive);
   return {
@@ -588,15 +564,14 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     command: row.command,
     cwd: row.cwd,
     parent_actor_id: row.parent_actor_id,
+    todo_id: row.todo_id,
+    ...(row.forked_from_agent_id != null
+      ? { forked_from_agent_id: row.forked_from_agent_id, forked_from_session_id: row.forked_from_session_id }
+      : {}),
     created_at: row.created_at,
+    ...(dormant ? { dormant_since: dormant.ended_at } : {}),
   };
 }
-
-export function contextCheckpointEnv(config: ProjectYml | null): Record<string, string> {
-  const value = config?.context_checkpoint_percent;
-  return value == null ? {} : { HIVE_CONTEXT_CHECKPOINT_PERCENT: String(value) };
-}
-
 export function worktreeInstallNotice(cwd: string, projectPath: string, config: ProjectYml | null): string | undefined {
   const install = config?.vars?.install?.trim();
   if (!install) return undefined;
@@ -610,7 +585,7 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. A same-project worker or lead on that harness's active usage limit makes this spawn retryable until its reset or bounded deadline; hive does not queue spawns. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -637,6 +612,9 @@ export function registerAgents(server: McpServer): void {
           ),
         extra_args: z.array(z.string()).optional().describe("Extra CLI arguments."),
         read_only: z.boolean().optional().describe("Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only bare claude/codex executables. Extra args allow codex -c model_reasoning_effort=low|medium|high|xhigh, or claude --effort low|medium|high|xhigh|max; all other arguments are refused."),
+        todo_id: idParam
+          .optional()
+          .describe("The todo this worker is on, recorded as a link (a non-archived todo in the same project). Changes no todo status."),
         cwd: z
           .string()
           .optional()
@@ -645,7 +623,7 @@ export function registerAgents(server: McpServer): void {
           .enum(["split", "window"])
           .optional()
           .describe(
-            "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode).",
+            "Omit this to use the project's hive.yml placement, else HIVE_SPAWN_PLACEMENT, else split. split: the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode). agent_output reads scrollback, so a crowded window does not limit what a lead can read. If workers end up in other windows, run hive layout to gather them.",
           ),
         layout: z
           .enum(WINDOW_LAYOUTS)
@@ -697,6 +675,19 @@ export function registerAgents(server: McpServer): void {
           }
         }
 
+        if (args.todo_id !== undefined) {
+          const linked = db
+            .prepare("SELECT archived_at FROM todos WHERE id = ? AND project_id = ?")
+            .get(args.todo_id, project.id) as { archived_at: string | null } | undefined;
+          if (!linked) throw new Error(`todo_id ${args.todo_id} is not a todo in project "${project.name}" (id ${project.id}).`);
+          if (linked.archived_at != null) throw new Error(`todo_id ${args.todo_id} is archived; unarchive it or link another todo.`);
+        }
+        const omittedTodoWarning = args.todo_id === undefined && db
+          .prepare("SELECT 1 FROM todos WHERE project_id = ? AND status = 'in_progress' AND archived_at IS NULL LIMIT 1")
+          .get(project.id)
+          ? "todo_id was omitted while this project has an in-progress todo; the crew view may infer a link from this worker's comments or pad updates."
+          : undefined;
+
         const name = args.name != null
           ? normalizeAgentName(args.name, "name")
           : nextWorkerName(project.id);
@@ -729,6 +720,7 @@ export function registerAgents(server: McpServer): void {
               `agents: list (${allowed.join(", ")}). Add it to agents: to allow spawning it.`,
           );
         }
+        if (harnessNames().includes(harness.name)) refuseLimitedHarness(project.id, harness.name);
         if (args.read_only && (
           !["claude", "codex"].includes(harness.name) ||
           !/^[A-Za-z0-9_./-]+$/.test(baseCommand) ||
@@ -780,10 +772,12 @@ export function registerAgents(server: McpServer): void {
             briefPath,
           });
         };
-        const placement =
-          args.placement ??
-          projectConfig?.placement ??
-          (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const configuredPlacement =
+          projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const placement = args.placement ?? configuredPlacement;
+        const placementNote = args.placement === "window" && configuredPlacement === "split"
+          ? 'This worker got its own window because per-call placement "window" overrides this project\'s split config; run `hive layout` to gather it.'
+          : undefined;
         const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
 
         let spawned;
@@ -796,7 +790,7 @@ export function registerAgents(server: McpServer): void {
             kind: "agent",
             commandString: buildCommand,
             cwd,
-            env: { ...contextCheckpointEnv(projectConfig), ...(codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {}) },
+            env: workerPaneEnvironment(projectConfig, harness, codexHomeKey ? codexHomeDir(codexHomeKey) : null),
             placement,
             layout,
             parentActor: parent,
@@ -805,6 +799,7 @@ export function registerAgents(server: McpServer): void {
             model: args.model,
             extraArgs: args.extra_args,
             readOnly: args.read_only,
+            todoId: args.todo_id,
             retainOnExit: harness.classifiesPaneScreen,
           });
         } catch (e) {
@@ -815,51 +810,50 @@ export function registerAgents(server: McpServer): void {
           if (codexHomeKey) rmSync(codexHomeDir(codexHomeKey), { recursive: true, force: true });
           throw e;
         }
-        const { agentId, actorId, target, landedInProjectId, layoutApplied } = spawned;
-        ensureAttached(sessionName());
+        const { agentId, actorId, target, landedInProjectId, layoutApplied, retainedWindow } = spawned;
 
         let ready = false;
         let dialogTail: string | undefined;
         let exited = false;
         let exitTail: string | undefined;
-        if (harness.classifiesPaneScreen) {
-          const classifier = harness.paneClassifier!;
-          // Captured before anything below can kill the pane: remain-on-exit is a WINDOW option,
-          // and the pane id itself stops being addressable once discardOrphanedPane has run.
-          const windowTarget = paneWindow(target) ?? target;
-          try {
-            const outcome = await pollPaneReadiness(target, PANE_READY_MS, classifier.hasInputBox);
-            if (outcome === "gone") {
-              // remain-on-exit held the pane so its final screen is still readable; capture it,
-              // persist it onto the row (the pane below is about to be killed), then release it.
-              // Never run choiceCheck against a retained-but-dead pane: it is frozen content, not
-              // a live dialog, and choiceCheck's own capture is tuned to read a live screen.
-              exited = true;
-              exitTail = captureFinalScreen(target, 30);
-              db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(exitTail, agentId);
-              discardOrphanedPane(target);
-            } else {
-              const { awaitingChoice, tail } = classifier.choiceCheck(target);
-              if (awaitingChoice === true) {
-                dialogTail = tail;
-              } else if (outcome === "ready") {
-                ready = true;
+        try {
+          ensureAttached(sessionName());
+          if (harness.classifiesPaneScreen) {
+            const classifier = harness.paneClassifier!;
+            try {
+              const outcome = await pollPaneReadiness(target, PANE_READY_MS, classifier.hasInputBox);
+              if (outcome === "gone") {
+                // remain-on-exit held the pane so its final screen is still readable; capture it,
+                // persist it onto the row (the pane below is about to be killed), then release it.
+                // Never run choiceCheck against a retained-but-dead pane: it is frozen content, not
+                // a live dialog, and choiceCheck's own capture is tuned to read a live screen.
+                exited = true;
+                exitTail = captureFinalScreen(target, 30);
+                db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(exitTail, agentId);
+                discardOrphanedPane(target);
+              } else {
+                const { awaitingChoice, tail } = classifier.choiceCheck(target);
+                if (awaitingChoice === true) {
+                  dialogTail = tail;
+                } else if (outcome === "ready") {
+                  ready = true;
+                }
               }
-            }
-          } catch {
+            } catch {
 
-            ready = false;
-          } finally {
-            // Unconditional: every early return, throw, or timeout between arming remain-on-exit
-            // and here must still clear it, or the shared window (the default split placement's)
-            // is left silently retaining every later exit in it, not just this one.
-            setRemainOnExit(windowTarget, false);
+              ready = false;
+            }
           }
+        } finally {
+          // Unconditional: every early return, throw, or timeout between arming remain-on-exit
+          // and here must still clear it, or the shared window (the default split placement's)
+          // is left silently retaining every later exit in it, not just this one.
+          if (retainedWindow) setRemainOnExit(retainedWindow, false);
         }
 
         const codexInstructions = codexHomeKey ? codexInstructionsPhrase(codexInstructionLayers) : undefined;
 
-        return {
+        const receipt: Record<string, unknown> = {
           agent_id: agentId,
           ...(args.read_only ? { read_only: true } : {}),
           actor_id: actorId,
@@ -898,10 +892,6 @@ export function registerAgents(server: McpServer): void {
                           note: "The pane never became ready. The brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
                         }),
               }
-            : harness.classifiesPaneScreen
-              ? {
-                  instructions: workerBrief(briefFor(actorId)),
-                }
               : {
                   brief_path: writeAgentBrief(agentId, workerBrief(briefFor(actorId))),
                   note:
@@ -913,6 +903,272 @@ export function registerAgents(server: McpServer): void {
                     "Wakes aimed at this worker are refused for the same reason.",
                 }),
         };
+        if (omittedTodoWarning) {
+          const existingNote = typeof receipt.note === "string" ? receipt.note : "";
+          receipt.note = existingNote ? `${existingNote} ${omittedTodoWarning}` : omittedTodoWarning;
+        }
+        if (placementNote) {
+          const existingNote = typeof receipt.note === "string" ? receipt.note : "";
+          receipt.note = existingNote ? `${existingNote} ${placementNote}` : placementNote;
+        }
+        return receipt;
+      }),
+  );
+
+  server.registerTool(
+    "agent_fork",
+    {
+      description:
+        "Fork a same-project Claude Code or Codex worker into a new worker with a new identity and pane. The child starts from a copy of the source conversation, gets a fresh brief, and does not inherit the source todo. Claude Code process-scoped permission grants are not copied and may need approval again.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      inputSchema: {
+        agent_id: idParam.describe("Numeric id of the same-project worker to fork."),
+        name: z.string().describe("Required name for the new child worker."),
+        cwd: z.string().optional().describe("Child working directory; defaults to the source worker's directory."),
+        model: z.string().min(1).optional().describe("Model override; defaults to the source worker's model."),
+        effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("Reasoning effort override; defaults to the source worker's effort."),
+        read_only: z.boolean().optional().describe("Read-only mode override; defaults to the source worker's mode."),
+        todo_id: idParam.optional().describe("Explicit todo for this new child; absent means no todo link."),
+        placement: z.enum(["split", "window"]).optional(),
+        layout: z.enum(WINDOW_LAYOUTS).optional(),
+        project_id: projectIdParam,
+      },
+      outputSchema: {
+        agent_id: idParam,
+        actor_id: z.string(),
+        name: z.string(),
+        tmux_target: z.string(),
+        forked_from_agent_id: idParam,
+        forked_from_session_id: z.string(),
+        session_id: z.string(),
+        ready: z.boolean(),
+        permission_note: z.string(),
+        note: z.string().optional(),
+        tail: z.string().optional(),
+      },
+    },
+    (args) =>
+      run(async () => {
+        const callerProject = resolveProject();
+        const project = args.project_id === undefined ? callerProject : resolveProject(args.project_id);
+        if (project.id !== callerProject.id) throw new Error("agent_fork is same-project only; source and child must belong to this session's project.");
+        const source = getAgentRow(project.id, args.agent_id, "Call agent_list(include_closed: true). agent_fork is same-project only.");
+        if (source.kind !== "agent") throw new Error("agent_fork only accepts a worker, not a lead or command row.");
+        if (source.status !== "running" && source.status !== "closed") {
+          throw new Error(`Agent ${source.id} cannot be forked from status ${source.status}.`);
+        }
+        const harness = harnessFor(source.command);
+        refuseLimitedHarness(project.id, harness.name, "agent_fork");
+        if (!["claude", "codex"].includes(harness.name)) {
+          throw new Error(`Agent ${source.id} uses unsupported fork harness "${harness.name}".`);
+        }
+        if (harness.name === "codex" && source.status === "closed" && !source.parked_at) {
+          throw new Error(`Closed Codex agent ${source.id} is not parked; its fork home may have been reaped.`);
+        }
+        if (harness.name === "codex" && !source.codex_home) {
+          throw new Error(`Codex agent ${source.id} has no recorded CODEX_HOME; it cannot be forked.`);
+        }
+        if (!source.session_id) throw new Error(`Agent ${source.id} has no recorded session id and cannot be forked.`);
+        if (!source.cwd || !existsSync(source.cwd) || !statSync(source.cwd).isDirectory()) {
+          throw new Error(`Agent ${source.id} has no readable working directory and cannot be forked.`);
+        }
+        if (!source.transcript_path || !existsSync(source.transcript_path) || !statSync(source.transcript_path).isFile()) {
+          throw new Error(`Agent ${source.id} has no readable transcript and cannot be forked.`);
+        }
+        const codexSeed = harness.name === "codex" ? readCodexForkSeed(source) : undefined;
+
+        const name = normalizeAgentName(args.name, "name");
+        requireNameFree(project.id, name);
+        let cwd = source.cwd;
+        if (args.cwd !== undefined) {
+          cwd = realpathSync(args.cwd);
+          if (!statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${args.cwd}`);
+          const cwdProject = findProjectForDir(cwd);
+          if (cwdProject && cwdProject.id !== project.id) {
+            throw new Error(`cwd ${cwd} belongs to project "${cwdProject.name}" (id ${cwdProject.id}), not source project "${project.name}" (id ${project.id}).`);
+          }
+        }
+        if (args.todo_id !== undefined) {
+          const linked = db.prepare("SELECT archived_at FROM todos WHERE id = ? AND project_id = ?").get(args.todo_id, project.id) as { archived_at: string | null } | undefined;
+          if (!linked) throw new Error(`todo_id ${args.todo_id} is not a todo in project "${project.name}" (id ${project.id}).`);
+          if (linked.archived_at != null) throw new Error(`todo_id ${args.todo_id} is archived; unarchive it or link another todo.`);
+        }
+
+        const model = args.model ?? source.model ?? extractCommandFlag(source.command, "--model");
+        const launchOptions = storedLaunchOptions(source.extra_args);
+        const readOnly = args.read_only ?? launchOptions.readOnly;
+        const effort = args.effort ?? effortForAgent(source, harness.name);
+        const forkEffort = effortArgs(harness.name, effort);
+        const projectConfig = loadProjectYml(project.path).config;
+        const placement = args.placement ?? projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
+        const childSessionId = harness.name === "claude" ? randomUUID() : "";
+        const codexHomeKey = harness.name === "codex" ? randomUUID() : undefined;
+        const deadline = Date.now() + PANE_READY_MS;
+        let instructionLayers: string[] = [];
+        const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
+          const brief = workerBrief({
+            name,
+            actorId,
+            projectName: project.name,
+            projectPath: project.path,
+            cwd,
+            profile: activeProfile(projectConfig),
+            vars: mergedBriefVars(projectConfig?.vars, harness.name),
+          });
+          if (harness.name === "codex" && codexHomeKey) {
+            const home = ensureCodexHome({
+              key: codexHomeKey,
+              actorId,
+              serverEnv: agentIdentityEnv(actorId, name, project.path),
+              cwd,
+              brief,
+              readOnly,
+              includePostToolUse: projectConfig?.context_checkpoint_percent != null,
+            });
+            instructionLayers = home.instructionLayers;
+            ensureCodexHooksFile(codexHomeKey, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+            seedCodexFork(source, codexHomeKey, codexSeed!);
+            if (findCodexFork(codexHomeKey, source.session_id)) {
+              throw new Error("Fresh Codex fork home already contains a child rollout before launch.");
+            }
+            return workerCommandString({
+              command: resolvedCommandPrefix(source.command) || "codex",
+              model,
+              displayName: name,
+              extraArgs: [...home.extraArgs, "-C", cwd, ...forkEffort, "fork", source.session_id],
+            });
+          }
+
+          const briefPath = writeAgentBrief(agentId, brief);
+          const settingsPath = ensureWorkerHooksFile(agentId, { readOnly, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+          return workerCommandString({
+            command: resolvedCommandPrefix(source.command) || "claude",
+            model,
+            displayName: name,
+            settingsPath,
+            briefPath,
+            extraArgs: [...forkEffort, "--session-id", childSessionId, "--resume", source.session_id, "--fork-session"],
+          });
+        };
+
+        let spawned;
+        try {
+          spawned = launchAgent({
+            projectId: project.id,
+            projectName: project.name,
+            projectPath: project.path,
+            name,
+            kind: "agent",
+            commandString: buildCommand,
+            cwd,
+            env: workerPaneEnvironment(projectConfig, harness, codexHomeKey ? codexHomeDir(codexHomeKey) : null),
+            placement,
+            layout,
+            parentActor: currentActor(),
+            sessionId: childSessionId,
+            codexHome: codexHomeKey,
+            model,
+            extraArgs: forkEffort,
+            readOnly,
+            todoId: args.todo_id,
+            forkedFromAgentId: source.id,
+            forkedFromSessionId: source.session_id,
+            retainOnExit: true,
+          });
+        } catch (error) {
+          if (codexHomeKey) rmSync(codexHomeDir(codexHomeKey), { recursive: true, force: true });
+          throw error;
+        }
+
+        const classifier = paneClassifierFor(source.command)!;
+        const readiness = await pollPaneReadiness(spawned.target, Math.max(0, deadline - Date.now()), classifier.hasInputBox);
+        if (harness.name === "codex") {
+          let found: { sessionId: string; transcriptPath: string } | null;
+          try {
+            found = await waitForCodexFork(codexHomeKey!, source.session_id, deadline);
+          } catch (error) {
+            try {
+              retireForkChild(project.id, spawned.agentId);
+            } catch (cleanupError) {
+              throw new Error(`Codex fork discovery failed (${String(error)}); child agent_id ${spawned.agentId} needs recovery (${String(cleanupError)}).`);
+            }
+            throw error;
+          }
+          if (!found) {
+            try {
+              retireForkChild(project.id, spawned.agentId);
+            } catch (cleanupError) {
+              throw new Error(`Codex fork session was not identified within ${PANE_READY_MS}ms; child agent_id ${spawned.agentId} needs recovery (${String(cleanupError)}).`);
+            }
+            throw new Error(`Codex fork session was not identified within ${PANE_READY_MS}ms; child agent_id ${spawned.agentId} was retired.`);
+          }
+          if (readiness === "gone") {
+            retireForkChild(project.id, spawned.agentId);
+            throw new Error(`Codex fork child agent_id ${spawned.agentId} exited before it became ready.`);
+          }
+          const child = getAgentRow(project.id, spawned.agentId, "Call agent_list(include_closed: true).");
+          if (!stillOwnsPane(child, "agent_fork session discovery")) {
+            retireForkChild(project.id, spawned.agentId);
+            throw new Error(`Codex fork child agent_id ${spawned.agentId} no longer owns its pane.`);
+          }
+          const bound = db.prepare(
+            "UPDATE agents SET session_id = ?, transcript_path = ? WHERE id = ? AND status = 'running' AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ? AND session_id = '' AND forked_from_session_id = ?",
+          ).run(found.sessionId, found.transcriptPath, child.id, child.tmux_target, child.tmux_socket, child.pane_pid, source.session_id);
+          if (bound.changes !== 1) {
+            retireForkChild(project.id, spawned.agentId);
+            throw new Error(`Codex fork identity could not be bound to child agent_id ${spawned.agentId}; the child was retired.`);
+          }
+          const choice = readiness === "ready" ? classifier.choiceCheck(spawned.target) : { awaitingChoice: null, tail: "" };
+          return {
+            agent_id: spawned.agentId,
+            actor_id: spawned.actorId,
+            name,
+            tmux_target: spawned.target,
+            forked_from_agent_id: source.id,
+            forked_from_session_id: source.session_id,
+            session_id: found.sessionId,
+            ready: readiness === "ready" && choice.awaitingChoice !== true,
+            permission_note: "Claude Code process-scoped permission grants are not copied to a fork; approve them again in the child if prompted.",
+            ...(readiness !== "ready" || choice.awaitingChoice === true ? {
+              note: readiness === "timeout" ? "The child session was found, but its pane did not reach a classifiable input box before the readiness deadline." : "The child session was found, but the pane is waiting on a choice. Clear it before sending an assignment.",
+              tail: choice.tail || capturePaneQuietly(spawned.target),
+            } : {}),
+          };
+        }
+
+        let tail: string | undefined;
+        let exited = false;
+        let dialog = false;
+        if (readiness === "gone") {
+          exited = true;
+          tail = captureFinalScreen(spawned.target, 30);
+          db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(tail, spawned.agentId);
+          discardOrphanedPane(spawned.target);
+        } else if (readiness === "ready") {
+          const choice = classifier.choiceCheck(spawned.target);
+          dialog = choice.awaitingChoice === true;
+          if (dialog) tail = choice.tail;
+        } else {
+          tail = capturePaneQuietly(spawned.target);
+        }
+        return {
+          agent_id: spawned.agentId,
+          actor_id: spawned.actorId,
+          name,
+          tmux_target: spawned.target,
+          forked_from_agent_id: source.id,
+          forked_from_session_id: source.session_id,
+          session_id: childSessionId,
+          ready: readiness === "ready" && !dialog,
+          permission_note: "Claude Code process-scoped permission grants are not copied to a fork; approve them again in the child if prompted.",
+          ...(exited ? { note: "The forked session was created, but its pane exited before becoming ready.", tail } : dialog ? { note: "The forked session is waiting on a choice. Clear it before sending an assignment.", tail } : readiness === "timeout" ? { note: "The forked session was created, but its pane did not reach a classifiable input box before the readiness deadline.", tail } : {}),
+        };
       }),
   );
 
@@ -920,7 +1176,7 @@ export function registerAgents(server: McpServer): void {
     "agent_resume",
     {
       description:
-        "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+        "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. A same-project worker or lead on that harness's active usage limit makes this resume retryable until its reset or bounded deadline; hive does not queue resumes. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -949,143 +1205,9 @@ export function registerAgents(server: McpServer): void {
       run(async () => {
         const project = resolveProject(args.project_id);
         const agent = findClosedAgent(project.id, args);
-
-        if (agent.kind === LEAD_KIND) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}") is this project's lead session. agent_resume is for workers; ` +
-              "start a lead session with `hive lead`.",
-          );
-        }
-        const resumeHarness = harnessFor(agent.command);
-        if (!resumeHarness.supportsResume) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s harness ("${resumeHarness.name}", command: "${agent.command}") ` +
-              "does not support resume, so it has no session id to resume from.",
-          );
-        }
-        if (!agent.session_id) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}") has no recorded session id, so it cannot be resumed. It may ` +
-              "predate this feature, or it may have closed before its first hook event ever fired. Spawn a new " +
-              "worker instead.",
-          );
-        }
-        if (resumeHarness.name === "codex" && !agent.codex_home) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}") has no recorded CODEX_HOME, so its session cannot be resumed. ` +
-              (agent.parked_at
-                ? "This should not happen for a parked codex worker - its home is only reaped on agent_close. " +
-                  "Check agent_status for how it actually got here."
-                : "It was closed with agent_close, which reaps a codex worker's home (rollout files included) " +
-                  "immediately - only a PARKED codex worker keeps its home. Nothing here to resume; spawn a new " +
-                  "worker instead."),
-          );
-        }
-
-        if (!existsSync(agent.cwd)) {
-          const recreate = agent.parked_branch
-            ? `git worktree add ${agent.cwd} ${agent.parked_branch}`
-            : `recreate a checkout at ${agent.cwd} (no branch was recorded for it - agent_park records one)`;
-          const reason =
-            resumeHarness.name === "codex"
-              ? "It resumes into that directory as its working directory"
-              : "Its transcript is resolved from that path";
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd}. ${reason}, so ` +
-              `recreate it and the resume works unchanged: ${recreate}`,
-          );
-        }
-
-        const branchNow = agent.parked_branch ? branchAt(agent.cwd) : "";
-        const branchDrift =
-          branchNow && branchNow !== agent.parked_branch
-            ? { parked_branch: agent.parked_branch, branch_now: branchNow }
-            : null;
-
-        const collision = runningAgentNamed(project.id, agent.name);
-        if (collision) {
-          throw new Error(
-            `Cannot resume agent ${agent.id} ("${agent.name}") under its recorded name: a running agent ` +
-              `(agent ${collision.id}) already has it. agent_resume does not rename on your behalf - the ` +
-              `${agent.parked_at ? "parked" : "closed"} lane is not lost, it just cannot come back under a name ` +
-              "someone else is using. Free the name first (agent_rename or agent_close on the running one), " +
-              `then retry agent_resume(agent_id: ${agent.id}).`,
-          );
-        }
-
-        const { config: projectConfig } = loadProjectYml(project.path);
-        const placement =
-          projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
-        const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
-
-        const launchOptions = storedLaunchOptions(agent.extra_args);
-        let commandString: string;
-        let resumeEnv: Record<string, string> = contextCheckpointEnv(projectConfig);
-        if (resumeHarness.name === "codex") {
-          commandString = workerCommandString({
-            command: resolvedCommandPrefix(agent.command) || "codex",
-            // Recovered from the row's own recorded command: every codex worker hive spawns
-            // carries a pinned model (codex has no bare alias), so dropping this would silently
-            // resume on codex's default model instead of the one the lane actually chose.
-            model: agent.model ?? extractCommandFlag(agent.command, "--model"),
-            displayName: agent.name,
-            // Subcommand positional, not a flag - live-verified on v0.149.0 (`codex resume --help`:
-            // "Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]"). No --settings/hooks file: a
-            // codex worker's hooks come from its own home's hooks.json, never claude's shared one.
-            extraArgs: [
-              ...codexLaunchArgs(agent.cwd, launchOptions.readOnly),
-              ...stripSessionArgs(launchOptions.args),
-              "resume",
-              agent.session_id,
-            ],
-          });
-          resumeEnv = { ...resumeEnv, CODEX_HOME: codexHomeDir(agent.codex_home) };
-          ensureCodexHooksFile(agent.codex_home, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
-          refreshCodexMcpEnv(agent.codex_home, agentIdentityEnv(agent.actor_id, agent.name, project.path));
-        } else {
-          const claudeBinary = resolvedCommandPrefix(agent.command) || "claude";
-          commandString = workerCommandString({
-            command: claudeBinary,
-            displayName: agent.name,
-            model: agent.model ?? undefined,
-            extraArgs: [
-              ...stripSessionArgs(launchOptions.args),
-              "--resume",
-              agent.session_id,
-            ],
-            settingsPath: ensureWorkerHooksFile(agent.id, { readOnly: launchOptions.readOnly, includePostToolUse: projectConfig?.context_checkpoint_percent != null }),
-          });
-        }
-
-        const { target, landedInProjectId } = resumeAgent({
-          agentId: agent.id,
-          actorId: agent.actor_id,
-          name: agent.name,
-          projectId: project.id,
-          projectName: project.name,
-          projectPath: project.path,
-          cwd: agent.cwd,
-          commandString,
-          env: resumeEnv,
-          placement,
-          layout,
-          parentActor: currentActor(),
-        });
+        const receipt = await resumeWorker(project.id, agent.id, { parentActor: currentActor() });
         ensureAttached(sessionName());
-
-        return {
-          agent_id: agent.id,
-          actor_id: agent.actor_id,
-          name: agent.name,
-          tmux_target: target,
-          resumed_session_id: agent.session_id,
-
-          ...(agent.parked_at ? { was_parked_at: agent.parked_at } : {}),
-          ...(branchDrift ? { branch_drift: branchDrift } : {}),
-          ...(landedInProjectId != null
-            ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` }
-            : {}),
-        };
+        return receipt;
       }),
   );
 
@@ -1093,7 +1215,7 @@ export function registerAgents(server: McpServer): void {
     "agent_park",
     {
       description:
-        "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+        "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, release any leases the worker holds, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1116,6 +1238,7 @@ export function registerAgents(server: McpServer): void {
         session_id: z.string(),
         todo_ids: z.array(idParam),
         board_line: z.string(),
+        released_leases: z.array(z.string()).optional(),
         note: z.string().optional(),
       },
     },
@@ -1171,9 +1294,20 @@ export function registerAgents(server: McpServer): void {
 
         const branch = branchAt(agent.cwd);
         if (live) live = stillOwnsPane(agent, "agent_park");
-        if (live) killAgentPane(agent.tmux_target);
-
-        const parkedAt = parkAgentRow(agent.id, paneIdentity(agent), branch);
+        if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+          throw new Error(`Agent ${agent.id} changed before its park intent was recorded. Nothing was changed.`);
+        }
+        const window = live ? paneWindow(agent.tmux_target) : null;
+        if (db.inTransaction) {
+          throw new Error("agent_park must hold the outermost transaction; a nested SAVEPOINT loses write-lock exclusion.");
+        }
+        const parked = db.transaction(() => {
+          if (live) live = stillOwnsPane(agent, "agent_park");
+          if (live) killAgentPaneWithoutRelayout(agent.tmux_target);
+          return parkAgentRowWithLeases(agent.id, paneIdentity(agent), branch);
+        }).immediate();
+        if (live) relayoutAfterPaneLeft(window);
+        const parkedAt = parked.parked_at;
         if (parkedAt === undefined) {
 
           const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
@@ -1216,6 +1350,7 @@ export function registerAgents(server: McpServer): void {
             ? undefined
             : `Parked with no kill: its pane ownership read ${ownership === "live" ? "changed" : ownership}, so its own process was already gone and ` +
                 "that pane was left alone.",
+          parked.released_leases,
         );
       }),
   );
@@ -1271,18 +1406,26 @@ export function registerAgents(server: McpServer): void {
         if (ownership === "unknown") throw notOwnedError(agent, ownership);
         const live = ownership === "live";
         const identity = paneIdentity(agent);
+        const renameHarness = harnessFor(agent.command);
+        if (live && renameHarness.supportsRename) {
+          observeUsageLimit(agent.id, Date.now());
+          const limit = usageLimitGate(agent.id, Date.now());
+          if (limit.held) {
+            throw new Error(`agent_rename is retryable after the target usage limit at ${limit.until}; the row and pane were not renamed.`);
+          }
+        }
 
         renameAgent(agent, newName, live ? project.name : null);
 
         let retitled = false;
         let heldNote: string | undefined;
         let heldTail: string | undefined;
-        const renameHarness = harnessFor(agent.command);
         if (live && renameHarness.supportsRename) {
           const classifier = renameHarness.paneClassifier!;
           const { awaitingChoice, tail } = classifier.choiceCheck(agent.tmux_target);
 
           const box = awaitingChoice === false ? classifier.inputBoxState(agent.tmux_target) : null;
+          const inCopyMode = paneInCopyMode(agent.tmux_target);
           if (awaitingChoice === true) {
             heldNote =
               "Not retitled: the pane is waiting on a choice, so typing /rename would answer it instead of setting the title. Clear the prompt first (agent_send with keys), then retry.";
@@ -1301,6 +1444,10 @@ export function registerAgents(server: McpServer): void {
 
             heldNote =
               `Not retitled: the pane's input box holds unsubmitted text, so /rename would be pasted onto the end of it and submitted as prose rather than run as a command. The row IS renamed - it is "${newName}" now - and only the pane's own title was left alone. Clear the line with agent_send(keys: ["C-a", "C-k"]) once you can attribute the text, then call agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
+            heldTail = tail;
+          } else if (inCopyMode === true) {
+            heldNote =
+              `Not retitled: the pane is in tmux copy mode, so /rename would not reach its prompt. The row IS renamed - it is "${newName}" now - and only the pane's own title was left alone. Leave copy mode (press q or Escape there), then call agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
             heldTail = tail;
           } else {
 
@@ -1497,7 +1644,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. A submitted text send to a target on its current usage limit is stored and held in its message row until release; its receipt says pending, so do not resend it. keys and submit=false remain manual recovery paths. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. With quiet_messaging on, a worker's submitted text to a Claude lead is stored with a message id and posted over the lead's messaging socket instead of typed (the same pointer when over 300 characters): the receipt says pending until the lead's prompt confirms it, hive types it into the pane once if no confirmation comes, and the socket post skips the pane checks below; do not resend a pending send. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1518,12 +1665,16 @@ export function registerAgents(server: McpServer): void {
     (args) =>
       run(async () => {
         const project = resolveProject(args.project_id);
-        const agent = findAgent(project.id, args);
+        const agent = resolveQueenLeadTarget("agent_send", project.id, args.agent_id ?? args.name, () =>
+          findAgent(project.id, args),
+        );
         requireLive(agent);
         const target = agent.tmux_target;
+        const identity = paneIdentity(agent);
         const auditIdentity = captureQueenWriteIdentity(project.id);
         let outgoing = args.text ?? ""; const tag = senderTag(project.id, currentActor());
         let shortened: { message_id: number; note: string; marker: string } | null = null;
+        let boxBefore: InputBoxBefore | null = null;
         const withShortened = <T extends Record<string, unknown> & { note?: string }>(receipt: T) =>
           shortened === null
             ? receipt
@@ -1559,6 +1710,30 @@ export function registerAgents(server: McpServer): void {
                 "turning a text call into a keys call. Tab and newline are the only control characters " +
                 'allowed. To send an actual keystroke on purpose, use keys instead (e.g. keys: ["C-c"]).',
             );
+          }
+          const messageOptions = {
+            projectId: project.id,
+            fromActor: currentActor(),
+            target: agent,
+            text: args.text,
+            submit: args.submit !== false,
+          };
+          const quiet = await sendUsageHeldMessage(messageOptions) ?? await sendQuietLeadMessage(messageOptions);
+          if (quiet !== null) {
+            if (quiet.sent) {
+              confirmQueenWrite("agent_send", project.id, args, { sent: true, agent_id: agent.id }, auditIdentity);
+            }
+            if (args.wait_ms == null) return quiet;
+            await sleep(args.wait_ms);
+            try {
+              requireStillOwned(agent.id, identity, "agent_send");
+              return { ...quiet, tail: capturePane(target, 15) };
+            } catch {
+              return {
+                ...quiet,
+                tail_note: "The terminal tail could not be read after the wait (the pane may have died or changed owner).",
+              };
+            }
           }
           if (!screenClassifiable(agent.command)) {
             return {
@@ -1618,7 +1793,9 @@ export function registerAgents(server: McpServer): void {
           }
 
           if (submitting) {
-            const box = sendClassifier.inputBoxState(target);
+            const snapshot = readInputBox(sendClassifier, target);
+            const box = snapshot?.box ?? null;
+            boxBefore = inputBoxBefore(snapshot);
             if (holdsHumanInput(box)) {
               return {
                 agent_id: agent.id,
@@ -1635,6 +1812,15 @@ export function registerAgents(server: McpServer): void {
               };
             }
           }
+
+          const newlyHeld = await sendUsageHeldMessage({
+            projectId: project.id,
+            fromActor: currentActor(),
+            target: agent,
+            text: args.text,
+            submit: submitting,
+          });
+          if (newlyHeld !== null) return newlyHeld;
 
           if (
             agent.kind === LEAD_KIND &&
@@ -1658,7 +1844,6 @@ export function registerAgents(server: McpServer): void {
 
           let pasted = false;
           let buffered = false;
-          const identity = paneIdentity(agent);
           try {
             await sendText(
               target,
@@ -1670,9 +1855,33 @@ export function registerAgents(server: McpServer): void {
               () => {
                 buffered = true;
               },
-              () => requireStillOwned(agent.id, identity, "agent_send"),
+              () => {
+                requireStillOwned(agent.id, identity, "agent_send");
+                if (submitting) {
+                  observeUsageLimit(agent.id, Date.now());
+                  const gate = usageLimitGate(agent.id, Date.now());
+                  if (gate.held) throw new UsageLimitActive(`the target harness is stopped by a usage limit until ${gate.until}`);
+                }
+              },
             );
           } catch (err) {
+            if (err instanceof UsageLimitActive && !pasted) {
+              const held = await sendUsageHeldMessage({
+                projectId: project.id,
+                fromActor: currentActor(),
+                target: agent,
+                text: args.text,
+                submit: submitting,
+              });
+              if (held !== null) return held;
+            }
+            if (err instanceof UsageLimitActive && pasted) {
+              throw new Error(
+                `[agent_send:usage-limit-after-paste] ${err.message}. The text was pasted but no Enter was sent; ` +
+                  "read the pane before deciding whether to submit or clear it.",
+                { cause: err },
+              );
+            }
             const shortenedClause =
               shortened === null ? "" : shortenedSendFailureClause(shortened.marker, shortened.message_id);
             if (err instanceof PaneOwnershipLost) {
@@ -1709,10 +1918,11 @@ export function registerAgents(server: McpServer): void {
         }
 
         if (args.wait_ms != null) {
-          await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+          await sleep(args.wait_ms);
 
           let tailField: { tail: string } | { note: string };
           try {
+            requireStillOwned(agent.id, identity, "agent_send");
             tailField = { tail: capturePane(target, 15) };
           } catch {
             tailField = {
@@ -1726,6 +1936,7 @@ export function registerAgents(server: McpServer): void {
             ...tailField,
 
             ...inputBoxField(agent.command, target),
+            ...(boxBefore === null ? {} : { input_box_before: boxBefore }),
           });
         }
 
@@ -1737,7 +1948,7 @@ export function registerAgents(server: McpServer): void {
     "agent_message_get",
     {
       description:
-        "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
+        "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here when it shortens one (text over 300 characters sent to a lead by someone who is not that lead) and, with quiet_messaging on, for every submitted worker send to a Claude lead, whose result then also carries its delivery state (delivery_status, delivery_method, socket_attempt_at, confirmed_at, fallback_claimed_at, typed_at, delivery_note and the accepted target). Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1764,6 +1975,9 @@ export function registerAgents(server: McpServer): void {
           chars: row.text.length,
           created_at: row.created_at,
           text: row.text,
+          ...(row.delivery_status === null
+            ? {}
+            : Object.fromEntries(DELIVERY_FIELDS.map((field) => [field, row[field]]))),
         };
       }),
   );
@@ -1817,7 +2031,7 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A process-stopping close releases the worker's leases; row_only=true leaves its leases in place because it does not stop the pane. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1843,6 +2057,7 @@ export function registerAgents(server: McpServer): void {
         row_only: z.boolean().optional(),
         park_released: z.boolean().optional(),
         parked: z.boolean().optional(),
+        released_leases: z.array(z.string()).optional(),
         note: z.string().optional(),
       },
     },
@@ -1889,6 +2104,26 @@ export function registerAgents(server: McpServer): void {
           return { agent_id: agent.id, name: agent.name, closed: true, park_released: true };
         }
 
+        if (agent.status === "closed" && agent.kind === "agent" && agent.recovery_state === "pending") {
+          if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+            throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
+          }
+          let releasedHome: boolean | null = null;
+          if (agent.codex_home) {
+            try {
+              releasedHome = reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+            } catch {
+
+            }
+          }
+          return {
+            agent_id: agent.id,
+            name: agent.name,
+            closed: true,
+            note: pendingRecoveryAbandonmentNote(agent.id, agent.codex_home, releasedHome),
+          };
+        }
+
         const ownership: RowOwnership = agent.status === "running" ? observeOwnership(agent) : "gone";
         if (ownership === "unknown") {
           throw new Error(
@@ -1926,9 +2161,13 @@ export function registerAgents(server: McpServer): void {
           };
         }
         if (live) live = stillOwnsPane(agent, "agent_close");
+        if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+          throw new Error(`Agent ${agent.id} changed before its close intent was recorded. Nothing was changed.`);
+        }
         if (live) killAgentPane(agent.tmux_target);
 
-        if (!closeAgentRow(agent.id, paneIdentity(agent))) {
+        const closed = closeAgentRowWithLeases(agent.id, paneIdentity(agent));
+        if (!closed.closed) {
 
           const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
           const report = classifyLostCas(after);
@@ -1976,6 +2215,7 @@ export function registerAgents(server: McpServer): void {
           agent_id: agent.id,
           name: agent.name,
           closed: true,
+          ...(closed.released_leases.length > 0 ? { released_leases: closed.released_leases } : {}),
           ...(agent.status === "running" && !live
             ? {
                 note: `Closed with no kill: its pane ownership read ${ownership === "live" ? "changed" : ownership}, so that pane was left alone.`,
@@ -1984,4 +2224,33 @@ export function registerAgents(server: McpServer): void {
         };
       }),
   );
+}
+
+type InputBoxBefore = {
+  state: InputBoxState["state"] | "not_found" | "unreadable";
+  text?: string;
+  rows?: string[];
+  prompt_sgr?: string;
+};
+
+function inputBoxBefore(snapshot: InputBoxSnapshot | null): InputBoxBefore {
+  if (snapshot === null) return { state: "unreadable" };
+  const { box, rows, promptSgr } = snapshot;
+  const sgr = promptSgr ? { prompt_sgr: promptSgr } : {};
+  const withRows = rows === undefined ? {} : { rows };
+  if (box === null) return { state: "not_found", ...withRows, ...sgr };
+  if (box.state === "ghost") return { state: "ghost", ...sgr };
+  return { state: box.state, text: box.text, ...withRows, ...sgr };
+}
+
+function readInputBox(classifier: PaneClassifier, target: string): InputBoxSnapshot | null {
+  if (classifier.inputBoxSnapshot) return classifier.inputBoxSnapshot(target);
+  const box = classifier.inputBoxState(target);
+  return box === null ? null : { box };
+}
+
+function leadSummaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): { alive: Liveness; dormant: { ended_at: string } | null } {
+  const ownership = row.status === "running" ? rowOwnership(row, snapshot) : null;
+  const alive = ownership === null ? false : ownershipLiveness(ownership);
+  return { alive, dormant: ownership === null ? null : leadSessionEnded(row, ownership) };
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, runCli, scratchDirs, seedTrustedYml } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, runCli, scratchDirs, seedTrustedYml } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead reserved process-name tests");
 
@@ -9,6 +9,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 
 let projectId;
@@ -33,7 +34,7 @@ describe("hive start refuses a process named \"lead\"", { skip: hasTmux ? false 
   it("skips it and names the reason, starting nothing", async () => {
     const { code, stdout } = await runCli(["start", "lead"], opts);
 
-    assert.equal(code, 0, stdout);
+    assert.equal(code, 1, stdout);
     assert.match(stdout, /reserved/);
     const rows = db.prepare("SELECT * FROM agents WHERE project_id = ? AND name = 'lead'").all(projectId);
     assert.equal(rows.length, 0, "a refused start must not leave any row behind, of any kind");
@@ -47,7 +48,7 @@ describe("hive start refuses a process named \"lead\"", { skip: hasTmux ? false 
 
     const { code, stdout } = await runCli(["start", "lead"], opts);
 
-    assert.equal(code, 0, stdout);
+    assert.equal(code, 1, stdout);
 
     assert.doesNotMatch(stdout, /already running/, "the real lead's row must not stand in for the process");
     assert.match(stdout, /reserved/);

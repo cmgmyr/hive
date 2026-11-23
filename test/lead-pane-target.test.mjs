@@ -38,7 +38,8 @@ describe(
     const envMarker = join(dirs.tmp, "lead-pane-env-marker");
     const claudePath = fakeClaude(
       `(echo "HIVE_AGENT_ID=$HIVE_AGENT_ID"; echo "HIVE_LEAD=$HIVE_LEAD"; echo "HIVE_DATA_DIR=$HIVE_DATA_DIR") ` +
-        `> "${envMarker}" 2>/dev/null || true; exec sleep 600`,
+        `> "${envMarker}" 2>/dev/null || true; cat '${join(process.cwd(), "test/fixtures/panes/ready-idle.txt")}'; ` +
+        `cat >/dev/null & exec sleep 600`,
     );
     const cliOpts = {
       cwd: dirs.projectDir,

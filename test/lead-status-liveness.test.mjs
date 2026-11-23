@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 
-import { fakeFailingTmux, isolateTmux, paneField, runCli, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, fakeFailingTmux, isolateTmux, paneField, runCli, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead status liveness tests");
 
@@ -10,6 +10,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 
 const BYSTANDER = `lead-status-bystander-${process.pid}`;

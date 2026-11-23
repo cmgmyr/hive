@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, globSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -192,10 +192,37 @@ describe("interpreter and ABI", () => {
     };
 
     const bare = abiFixLines(mismatch).join("\n");
-    assert.doesNotMatch(bare, /^ *hive setup$/m);
-    assert.match(bare, /<the Node that built it> ".*dist\/cli\.js" setup/);
+    assert.doesNotMatch(bare, /(?:&&|;)\s*hive setup(?:\s|$)/);
+    assert.match(bare, /'<the Node that built it>' '.*dist\/cli\.js' setup/);
+    assert.match(bare, /Global install: npm install -g @cmgmyr\/hive/);
+    assert.match(bare, /Checkout: npm install && npm run build/);
 
-    assert.match(abiFixLines(mismatch, "/pinned/node").join("\n"), /"\/pinned\/node" ".*cli\.js" setup/);
+    assert.match(abiFixLines(mismatch, "/pinned/node").join("\n"), /'\/pinned\/node' '.*cli\.js' setup/);
+  });
+
+  it("keeps re-pin advice from ending in a bare or chained `hive setup`", () => {
+    const loops = (text) =>
+      /(?:&&|;)\s*hive setup(?=[`'"])/.test(text) ||
+      /^\s*[`'"]\s*hive setup\s*[`'"],?\s*$/m.test(text) ||
+      /\b(?:re-run|rerun|run)\b[^\n]{0,80}?`hive setup`/.test(text);
+    for (const command of [
+      '"npm run build && hive setup"',
+      '"node cli.js setup; hive setup"',
+      '"hive setup"',
+      'Advice: re-run `hive setup` now.',
+      'Advice: run `hive setup` now.',
+      'Advice: rerun `hive setup` now.',
+    ]) {
+      assert.equal(loops(command), true, `must catch ${command}`);
+    }
+
+    assert.equal(loops("The ordinary repair (`hive setup`) only re-pins this worktree."), false);
+    assert.equal(loops("Running `hive setup` to repair it just re-pins this worktree."), false);
+
+    const advice = globSync("src/**/*.ts", { cwd: REPO })
+      .map((file) => readFileSync(join(REPO, file), "utf8"))
+      .join("\n");
+    assert.equal(loops(advice), false, "no printed re-pin advice may send setup through the stale hive shim");
   });
 
   it("refuses when the interpreter reports no Node-API level, instead of comparing NaN", () => {
@@ -360,6 +387,7 @@ describe("hive setup writes a dispatcher", () => {
       script.includes(`exec '${process.execPath}' '${CLI}' "$@"`),
       `dispatcher should exec this interpreter, got:\n${script}`,
     );
+    assert.ok(script.includes(`# Regenerate after every update: '${process.execPath}' '${CLI}' setup`), script);
 
     assert.ok(stdout.includes(`interpreter  ${process.execPath}`), stdout);
     assert.match(stdout, new RegExp(`NODE_MODULE_VERSION ${process.versions.modules}`));
@@ -508,7 +536,19 @@ describe("hive setup writes a dispatcher", () => {
     );
     const { stdout } = await runCli(["doctor"], setupOpts);
     assert.match(stdout, /warn {2}dispatcher: pinned to a different build/);
-    assert.match(stdout, /npm run build && hive setup/);
+    assert.match(stdout, /Re-pin after a rebuild: '[^']+' '[^']*dist\/cli\.js' setup/);
+  });
+
+  it("doctor gives a named re-pin when a dispatcher has another version's format", async () => {
+    mkdirSync(dirname(dispatcher), { recursive: true });
+    writeFileSync(
+      dispatcher,
+      `#!/bin/sh\n# hive dispatcher\nexec "${process.execPath}" "/legacy/cli.js" "$@"\n`,
+      { mode: 0o755 },
+    );
+    const { stdout } = await runCli(["doctor"], setupOpts);
+    assert.match(stdout, /warn {2}dispatcher: written by another version of hive/);
+    assert.ok(stdout.includes(`'${process.execPath}' '${join(REPO, "dist/cli.js")}' setup`));
   });
 
   it("doctor points at setup when there is no dispatcher", async () => {
@@ -613,6 +653,34 @@ describe("doctor reads the MCP registration", () => {
     writeUserConfig({ mcpServers: { other: { command: "node", args: ["/somewhere/else.js"] } } });
     const { stdout } = await runCli(["doctor"], { ...doctorOpts, cwd: dirs.tmp });
     assert.match(stdout, /info {2}mcp registration: none found for hive/);
+  });
+});
+
+describe("doctor's pty advice respects the installed package contents", () => {
+  it("names the scratch sweep script only from a checkout", async () => {
+    const checkout = await runCli(["doctor"], {
+      ...doctorOpts,
+      env: {
+        ...doctorOpts.env,
+        HIVE_PTY_HEADROOM_JSON: JSON.stringify({ allocated: 500, max: 511 }),
+        HIVE_PTY_PS_ROWS_JSON: "[]",
+      },
+    });
+    assert.match(checkout.stdout, /node scripts\/sweep-scratch\.mjs/);
+
+    const install = join(dirs.tmp, "global", "node_modules", "@cmgmyr/hive");
+    mkdirSync(install, { recursive: true });
+    cpSync(join(REPO, "dist"), join(install, "dist"), { recursive: true });
+    symlinkSync(join(REPO, "node_modules"), join(install, "node_modules"), "dir");
+    const global = await runNode(join(install, "dist", "cli.js"), ["doctor"], {
+      ...doctorOpts,
+      env: {
+        ...doctorOpts.env,
+        HIVE_PTY_HEADROOM_JSON: JSON.stringify({ allocated: 500, max: 511 }),
+        HIVE_PTY_PS_ROWS_JSON: "[]",
+      },
+    });
+    assert.doesNotMatch(global.stdout, /scripts\/sweep-scratch\.mjs/);
   });
 });
 

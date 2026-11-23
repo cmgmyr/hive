@@ -4,7 +4,7 @@
 
 ```text
 you   ▸ good morning, let's triage
-lead  ▸ reads the runbook and board pads, lists open todos, proposes lanes
+lead  ▸ reads the runbook (the profile's, or a runbook pad in a project without one; see [runbook and board](projects.md#runbook-and-board-hive-init)) and board pads, lists open todos, proposes lanes
 you   ▸ approve the plan
 lead  ▸ agent_spawn("api"), agent_send(task + todo 12)
         agent_spawn("ui"),  agent_send(task + todo 14)
@@ -49,15 +49,27 @@ The global file can supply either setting; project values take precedence. See [
 
 hive re-applies the layout whenever a worker spawns or closes, so it holds up as the crew changes size. `agent_spawn`'s receipt names the layout it applied, so you can tell what hive chose without checking the panes by eye.
 
+A worker spawned with `placement: "window"` against a split config gets its own window. Run `hive layout` to gather this project's live worker panes back into the lead window and restore the configured layout. It leaves unrelated panes where they are, and does nothing when `hive.yml` sets `placement: window`.
+
 ## Workers
 
 Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pane or window, with its own identity and locked to the project. Type into it with `agent_send`, and read its terminal with `agent_output`. Spawning several workers on the same project shares one plan: for parallel file edits, give each its own git worktree with the `cwd` parameter, and everyone still reads and writes the same pads and todos.
 
 Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`harness: "codex"`) or by naming the command directly (`command: "codex"`); leaving both unset spawns the project's `hive.yml` default, the first entry in its `agents:` list. A project has to opt codex into that list before either works. See [Codex workers](install.md#codex-leads-and-workers) for its lifecycle, reporting, and instruction-loading limits.
 
+Use `agent_fork(agent_id, name)` when you want a worker to try an alternative using an existing Claude Code or Codex conversation. Hive creates a separate worker identity, session, pane and brief, then waits for your assignment. The child uses the source cwd by default; pass another cwd in the same project when useful. Hive does not copy the source worktree or todo link, and does not promise that harness tasks copy. Claude process-scoped permissions need approval again. A Codex source must still have its generated home and rollout, so park it before forking if you want to preserve it; a closed Codex home has been reaped.
+
+### After a crash or reboot
+
+When hive confirms a running worker's pane is gone, it closes that worker's row and marks it for recovery. Run `hive crew-restore --dry-run` to see which workers qualify and what blocks the rest, then `hive crew-restore` to resume them with their own sessions. It does not repeat their last assignment, so tell each worker what to do next. A deliberate `agent_close` or `agent_park` is never restored. A crashed Codex worker's home is kept for seven days. See [recovering a worker after pane loss](projects.md#recovering-a-worker-after-pane-loss).
+
+### When a harness hits its usage limit
+
+While a worker or lead is at its Claude or Codex usage limit, hive holds due wakes and submitted messages, and `agent_spawn`, `agent_fork` and `agent_resume` refuse for that harness in this project and give a retry time. Nothing is lost: held text stays stored, and `agent_send` returns a `pending` receipt, so do not send it again. There is no setting for this. See [harness usage limits](projects.md#harness-usage-limits).
+
 ### A worker's long report reaches you as one line
 
-Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and types a single pointer line into that pane instead:
+Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and delivers a single pointer line to that pane instead:
 
 ```
 [hive:worker api] [message #7, 885 chars] BLOCKED: the migration test wedges on a
@@ -70,8 +82,10 @@ You get who sent it, how much you are not being shown, the first 140 characters,
 Three things about it are deliberate:
 
 - **Only messages to a lead are shortened, and only from someone who is not that lead.** Text sent to a worker is typed exactly as written at any length, because there the message IS the assignment, and a truncated assignment is a broken one.
-- **A short message is never touched.** Under 300 characters it lands whole, so "I am blocked, the machine is wedged" still arrives complete and actionable with no lookup. The threshold sits in the gap between the two real populations: the longest messages anyone writes by hand run to about 140 characters, and worker reports start around 440.
+- **A short message is never shortened.** Under 300 characters it lands whole, so "I am blocked, the machine is wedged" still arrives complete and actionable with no lookup. The threshold sits in the gap between the two real populations: the longest messages anyone writes by hand run to about 140 characters, and worker reports start around 440.
 - **The sender is told.** `agent_send`'s receipt comes back with `shortened: true`, the message id, and a note saying to put whatever needs acting on in the first 140 characters or on the todo. A worker cannot keep writing 900-byte reports believing you read them.
+
+With quiet messaging on (the default), a worker's message arrives as one dim `Message from @hive` row instead of typed text, short ones included, and every one carries its id (`[message #7, 42 chars]`), so `agent_message_get` also tells you whether it was confirmed. See [Quiet messaging](projects.md#quiet-messaging).
 
 Messages are kept for 7 days. The pointer line stays in your scrollback longer than that, so a lookup for an expired id tells you it expired rather than reporting it missing, and points you at the todo or pad the sender wrote instead.
 
@@ -93,11 +107,11 @@ Workers report their state (`working`, `idle`, `waiting`) the moment it changes,
 
 - `wake_when_idle(scope: "project")` is a **standing watch** over the crew you spawn: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session. It reports the workers *you* spawned, not every agent in the project, so a throwaway probe one of your workers spawned for itself stays out of your pane.
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.
-- `wake_set` gives a plain delayed or repeating wake-up, for anything that isn't "tell me when a worker goes idle."
+- `wake_set` gives a delayed, fixed-interval, or daily local-time wake-up, for anything that isn't "tell me when a worker goes idle." Use `at="19:00", repeat="daily"` for a DST-correct schedule in the creating server's captured local zone; a later OS/time-zone change needs cancel and re-set. A nonexistent local time skips that date, and an ambiguous time uses its first occurrence only.
 
-A fired wake-up types into your terminal as a fresh turn, prefixed `[hive wake #N]`. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
+A fired wake-up reaches your lead as a fresh turn, prefixed `[hive wake #N]`. By default a Claude lead started by `hive` sees it as one dim `Message from @hive` row, and hive types it once if the row is not confirmed. A worker, a Codex lead, a lead started without hive's generated hooks, or a lead in a project with `quiet_messaging: false` gets it typed into the terminal. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
 
-What gets typed depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets crew state**: a standing watch's finish notice is typed as one line per worker, in the state hive reads as it delivers, and the workers that have not reported are a tally at the end:
+What gets delivered depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets crew state**: a standing watch's finish notice is one line per worker, in the state hive reads as it delivers, and the workers that have not reported are a tally at the end:
 
 ```text
 [hive wake #752] docs-lane: idle.
@@ -118,7 +132,7 @@ That worker really is idle, so the watch still speaks and you still get control 
 
 ### hive holds a wake while you are talking
 
-If a human message reaches a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. A notice that waited that long says so when it lands, in one line; below that, the hold is too short to have made anything stale and hive stays quiet about it. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Tagged `agent_send` deliveries and hive's own wake deliveries are excluded, so crew reports do not hold a lead's wakes. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
+If a human message reaches a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. A notice that waited that long says so when it lands, in one line; below that, the hold is too short to have made anything stale and hive stays quiet about it. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Tagged `agent_send` deliveries, hive's own wake deliveries and hive's own first message to the lead are excluded, so crew reports and the first message do not hold a lead's wakes. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
 
 A hold of any kind that lasts more than an hour is the one case where a finish notice does not arrive as written. hive will not type an hour-old "your worker finished" as news, so it cancels that notice - and tells you it did, in a line naming the workers it covered and pointing at `wake_get` on the cancelled notice, which still holds the full text. You lose the timing, never the fact.
 

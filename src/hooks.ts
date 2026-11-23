@@ -7,6 +7,7 @@ import type { ContextRecordKind } from "./transcript.js";
 import { effectiveClaudeStatusLine, statusLineEntry } from "./statusline.js";
 
 export interface HookEntry {
+  matcher?: string;
   hooks: { type: string; command: string }[];
 }
 
@@ -32,10 +33,25 @@ export function ensureHooksFile(): string {
   return path;
 }
 
+// Off returns the store-wide file unchanged. On writes a per-project file, because hooks.json is shared
+// by every project's lead and an accept there would reach leads that never opted in.
+export function ensureLeadHooksFile(projectId: number, quietMessaging: boolean): string {
+  if (!quietMessaging) return ensureHooksFile();
+  const base = stateHookSettings();
+  const settings = {
+    hooks: { ...base.hooks, SessionStart: [hookEntry("session_start")] },
+    crossSessionInbound: "accept",
+  };
+  const path = join(dataDir, `lead-${projectId}-hooks.json`);
+  writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
+  return path;
+}
+
 function stateHookSettings(): { hooks: Record<string, HookEntry[]> } {
   return {
     hooks: {
       Stop: [hookEntry("stop")],
+      StopFailure: [{ ...hookEntry("stop_failure"), matcher: "rate_limit" }],
       UserPromptSubmit: [hookEntry("prompt")],
       Notification: [hookEntry("notify")],
       SessionEnd: [hookEntry("session_end")],

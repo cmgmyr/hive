@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 
 import {
+  assertScratchStore,
   DIST,
   REPO,
   clearHiveEnv,
@@ -26,6 +27,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 migrate();
 
 const HOOK = join(DIST, "hook.js");

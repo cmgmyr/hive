@@ -1,20 +1,27 @@
-import { captureQueenWriteIdentity, effectiveProjectId, isQueenLead, type QueenWriteIdentity } from "./context.js";
+import { captureQueenWriteIdentity, effectiveProjectId, isQueenLead } from "./context.js";
+import {
+  insertQueenAuditRow,
+  QUEEN_AUDIT_DEFAULT_LIMIT,
+  QUEEN_AUDIT_MAX_LIMIT,
+  QUEEN_AUDIT_MAX_ROWS,
+  QUEEN_AUDIT_RETENTION,
+  QUEEN_AUDIT_SUMMARY_MAX,
+  recordQueenRefusal,
+  type QueenAuditRow,
+  type QueenWriteIdentity,
+} from "./queenAuditStore.js";
 import { db } from "./db.js";
 import { cutToUnitBudget, flatten } from "./slug.js";
 
-export type { QueenWriteIdentity } from "./context.js";
-
-export interface QueenAuditRow {
-  id: number;
-  actor_id: string;
-  home_project_id: number;
-  target_project_id: number;
-  operation: string;
-  resource_type: string;
-  resource_id: number;
-  summary: string;
-  created_at: string;
-}
+export {
+  QUEEN_AUDIT_DEFAULT_LIMIT,
+  QUEEN_AUDIT_MAX_LIMIT,
+  QUEEN_AUDIT_MAX_ROWS,
+  QUEEN_AUDIT_RETENTION,
+  QUEEN_AUDIT_SUMMARY_MAX,
+  recordQueenRefusal,
+} from "./queenAuditStore.js";
+export type { QueenAuditRow, QueenWriteIdentity } from "./queenAuditStore.js";
 
 type Receipt = Record<string, unknown>;
 export interface QueenAuditOperation {
@@ -22,12 +29,6 @@ export interface QueenAuditOperation {
   resource(receipt: Receipt): { type: string; id: number } | null;
   summary(args: Receipt, receipt: Receipt): string;
 }
-
-export const QUEEN_AUDIT_SUMMARY_MAX = 160;
-export const QUEEN_AUDIT_DEFAULT_LIMIT = 20;
-export const QUEEN_AUDIT_MAX_LIMIT = 100;
-export const QUEEN_AUDIT_RETENTION = "-30 days";
-export const QUEEN_AUDIT_MAX_ROWS = 20_000;
 
 function resource(type: string, value: unknown): { type: string; id: number } | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? { type, id: value } : null;
@@ -62,7 +63,7 @@ export const QUEEN_AUDIT_OPERATIONS: Readonly<Record<string, QueenAuditOperation
   wake_update: {
     mode: "database",
     resource: (r) => r.updated === true ? resource("wake", r.wake_id) : null,
-    summary: (a) => `changed ${["body", "delay_seconds", "repeat_every_seconds"].filter((key) => a[key] !== undefined).join(", ")}${a.body === undefined ? "" : `: ${a.body}`}`,
+    summary: (a) => `changed ${["body", "delay_seconds", "repeat_every_seconds", "at", "repeat"].filter((key) => a[key] !== undefined).join(", ")}${a.body === undefined ? "" : `: ${a.body}`}`,
   },
   wake_cancel: {
     mode: "database",
@@ -103,10 +104,7 @@ function insertAudit(operation: string, targetProjectId: number, args: Receipt, 
   if (!touched) return;
   const text = flatten(spec.summary(args, receipt));
   const summary = text.length <= QUEEN_AUDIT_SUMMARY_MAX ? text : cutToUnitBudget(text, QUEEN_AUDIT_SUMMARY_MAX - 1) + "…";
-  db.prepare(
-    `INSERT INTO queen_audit (actor_id, home_project_id, target_project_id, operation, resource_type, resource_id, summary)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(identity.actor_id, identity.home_project_id, targetProjectId, operation, touched.type, touched.id, summary);
+  insertQueenAuditRow(operation, targetProjectId, identity, touched.type, touched.id, summary);
 }
 
 export function commitQueenStateWrite<T extends Receipt>(operation: string, targetProjectId: number, args: Receipt, mutate: () => T): T {

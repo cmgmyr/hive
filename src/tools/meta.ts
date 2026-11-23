@@ -51,6 +51,9 @@ export const ACTOR_OWNER_COLUMNS: readonly [string, string][] = [
   ["wakes", "owner"],
   ["wakes", "deliver_actor"],
   ["agent_state_log", "actor_id"],
+  ["questions", "asker"],
+  ["questions", "updated_by"],
+  ["questions", "answered_by"],
 ];
 
 function actorOwnsRows(actorId: string): boolean {
@@ -197,7 +200,7 @@ export function registerMeta(server: McpServer): void {
     "project_prune",
     {
       description:
-        "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. With project_id AND confirm_name (the project's exact name), removes that one project even when it owns rows: it takes a snapshot first, refuses while a running row owns a live pane or its pane ownership cannot be verified (agent_close row_only retires the latter), then deletes the project with everything it owns (todos, comments, pads, kv, leases, agents, wakes, trust, agent messages) in one transaction and reports per-table counts and the snapshot path. queen_audit rows naming it are kept, and so are other projects' lead-idle subscriptions that target it, so a watch on its lead ends with a named reason. confirm_name without project_id is refused, and there is no forced sweep. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
+        "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust, questions), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. With project_id AND confirm_name (the project's exact name), removes that one project even when it owns rows: it takes a snapshot first, refuses while a running row owns a live pane or its pane ownership cannot be verified (agent_close row_only retires the latter), then deletes the project with everything it owns (todos, comments, pads, kv, leases, agents, wakes, trust, questions, agent messages) in one transaction and reports per-table counts and the snapshot path. queen_audit rows naming it are kept, and so are other projects' lead-idle subscriptions that target it, so a watch on its lead ends with a named reason. confirm_name without project_id is refused, and there is no forced sweep. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,

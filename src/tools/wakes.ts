@@ -1,18 +1,33 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { assertSafeWakeBody, resolveAgentRef, resolveWakeDelivery } from "../wakeTarget.js";
+export { assertSafeWakeBody, resolveAgentRef, resolveWakeDelivery } from "../wakeTarget.js";
 import { commitQueenStateWrite } from "../queenAudit.js";
-import { currentActor, effectiveProjectId, getProject, isQueenLead } from "../context.js";
-import { run } from "../result.js";
-import { findAgent, observeOwnership, notOwnedError, summaryLiveness, type AgentRow } from "./agents.js";
 import {
-  ACTIVE_TIMER_WHERE,
-  LOG_RETENTION,
+  captureQueenWriteIdentity,
+  currentActor,
+  effectiveProjectId,
+  getProject,
+  isQueenLead,
+  resolveQueenLeadTarget,
+} from "../context.js";
+import { run } from "../result.js";
+import { findAgent, observeOwnership, notOwnedError, summaryLiveness, type AgentRow } from "../agentRecords.js";
+import {
   OWNED_BY_WATCH,
   WATCH_SCOPE_PROJECT,
   seedGoneCursor,
   type TimerRow,
 } from "../scheduler.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  LOG_RETENTION,
+  firedOneShotWhere, isRepeatingWake,
+  pendingOneShotWhere,
+  type ConfirmationStatus,
+  wakeConfirmation,
+} from "../wakeSql.js";
 import { idParam, projectIdParam } from "./params.js";
 import { cutToUnitBudget } from "../slug.js";
 import { awaitingFirstPrompt } from "../firstPrompt.js";
@@ -29,87 +44,30 @@ import { readLeadTurnState } from "../leadState.js";
 import { LEAD_TARGET_GONE, LEAD_TARGET_REISSUED, leadSubscription, paneVeto, runningLeadOf } from "../leadWatch.js";
 import { isRunningLeadActor, LEAD_KIND } from "../spawn.js";
 import { commandHead, screenClassifiable } from "../harnesses.js";
+import { nextClockDue } from "../wakeClock.js";
 
 const agentRefParam = z
   .union([idParam, z.string()])
   .describe("Running agent's name (preferred), or its numeric agent id.");
 
-function resolveAgentRef(projectId: number, ref: number | string): AgentRow {
-  return typeof ref === "number"
-    ? findAgent(projectId, { agent_id: ref })
-    : findAgent(projectId, { name: ref });
-}
-
-function refuseUnclassifiableTarget(agent: AgentRow): void {
-  if (screenClassifiable(agent.command)) return;
-  throw new Error(
-    `Agent ${agent.id} ("${agent.name}") runs ${JSON.stringify(commandHead(agent.command))}, and hive can only ` +
-      "classify a claude screen. A wake is delivered by pasting its body and pressing Enter, and the two guards " +
-      "that decide whether that is safe - a dialog on screen, unsubmitted human text in the box - both read " +
-      "claude's own chrome, so on this pane neither can answer. Delivery would type blind: into a dialog it " +
-      "answers the highlighted option, and on a shell it executes whatever the paste merged with. " +
-      "Refused here rather than at delivery, where it could only ever be held forever - a pane's harness never " +
-      "becomes classifiable, so that hold would never clear, and a timer that cannot fire is worse than an " +
-      "error you can read now. Drive this pane with agent_send(keys: [...]) instead, which is unguarded for " +
-      "exactly this reason.",
-  );
-}
-
-function resolveDelivery(
-  projectId: number,
-  deliverTo?: number | string,
-): { actor: string; pane: string } {
-  if (deliverTo != null) {
-    const agent = resolveAgentRef(projectId, deliverTo);
-    // Before the liveness probe: the harness is a durable fact about the row, while liveness is a
-    // question about right now, so a dead bash worker should say what is actually wrong with it.
-    refuseUnclassifiableTarget(agent);
-    const ownership = agent.status === "running" ? observeOwnership(agent) : "gone";
-    if (ownership === "gone") throw new Error(`Agent "${agent.name}" has no live tmux window to deliver to.`);
-    if (ownership !== "live") throw notOwnedError(agent, ownership);
-    return { actor: agent.actor_id, pane: agent.tmux_target };
-  }
-  const actor = currentActor();
-
-  const own = db
-    .prepare("SELECT * FROM agents WHERE actor_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1")
-    .get(actor) as AgentRow | undefined;
-  // Checked on the ROW, not behind the liveness probe: isLive is three-state, and letting a null
-  // fall through to the TMUX_PANE branch below accepts a wake the scheduler will then hold forever
-  // against that same row's command - the never-firing timer this refusal exists to prevent.
-  if (own) refuseUnclassifiableTarget(own);
-  if (own) {
-    const ownership = observeOwnership(own);
-    if (ownership === "live") return { actor, pane: own.tmux_target };
-    // Unknown never falls through to the ambient pane: that would bind this row's actor to a pane it may not own.
-    if (ownership === "unknown") throw notOwnedError(own, ownership);
-  }
-  const pane = process.env.TMUX_PANE;
-  if (pane) return { actor, pane };
-  throw new Error(
-    "This session cannot receive wake-ups: it is not running inside tmux, so nothing can be typed into its terminal. Start the lead inside tmux (run tmux, then claude; watch with tmux attach, or tmux -CC attach for iTerm's native windows), or pass deliver_to targeting a spawned agent.",
-  );
-}
-
-function pendingWakes(projectId: number): TimerRow[] {
+function pendingWakes(projectId: number): WakeRow[] {
   return db
     .prepare(`SELECT * FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} ORDER BY id`)
-    .all(projectId) as TimerRow[];
+    .all(projectId) as WakeRow[];
 }
 
 const RECENTLY_FIRED_LIMIT = 10;
 
-function recentlyFiredWakes(projectId: number): TimerRow[] {
+function recentlyFiredWakes(projectId: number): WakeRow[] {
   return db
     .prepare(
       `SELECT * FROM wakes
-       WHERE project_id = ? AND cancelled_at IS NULL AND fired_at IS NOT NULL AND repeat_every_ms IS NULL
+       WHERE project_id = ? AND ${firedOneShotWhere()}
          AND fired_at >= datetime('now', ?)
        ORDER BY fired_at DESC, id DESC LIMIT ${RECENTLY_FIRED_LIMIT}`,
     )
-    .all(projectId, LOG_RETENTION) as TimerRow[];
+    .all(projectId, LOG_RETENTION) as WakeRow[];
 }
-
 function makeChannelChecker(): (actorId: string) => boolean {
   const known = new Map<string, boolean>();
   return (actorId) => {
@@ -122,8 +80,6 @@ function makeChannelChecker(): (actorId: string) => boolean {
   };
 }
 
-type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no_confirmation_channel";
-
 function deliveryState(
   t: TimerRow,
   hasChannel: (actorId: string) => boolean,
@@ -134,6 +90,9 @@ function deliveryState(
   held_reason: string | null;
   confirmed_at: string | null;
   confirmation: ConfirmationStatus | null;
+  delivery_method: string | null;
+  delivered_by: string | null;
+  socket_attempt_at: string | null;
 } {
   return {
     typed_at: t.typed_at,
@@ -142,34 +101,43 @@ function deliveryState(
     held_reason: t.held_reason,
     confirmed_at: t.confirmed_at,
 
-    confirmation:
-      t.typed_at == null
-        ? null
-        : t.confirmed_at != null
-          ? "confirmed"
-          : !hasChannel(t.deliver_actor)
-            ? "no_confirmation_channel"
-            : t.typed_busy === 1
-              ? "unconfirmed_busy"
-              : "unconfirmed",
+    confirmation: wakeConfirmation(
+      t,
+      (t.typed_at == null && t.socket_attempt_at == null) || t.confirmed_at != null || hasChannel(t.deliver_actor),
+    ),
+    delivery_method: t.delivery_method,
+    delivered_by: t.delivered_by,
+    socket_attempt_at: t.socket_attempt_at,
   };
+}
+
+type ClockTimerFields = {
+  clock_at?: string | null;
+  clock_zone?: string | null;
+  clock_repeat?: string | null;
+};
+
+type WakeRow = TimerRow & ClockTimerFields;
+
+function clockScheduleFields(timer: WakeRow): Record<string, unknown> {
+  return timer.clock_at == null
+    ? {}
+    : { at: timer.clock_at, repeat: timer.clock_repeat, time_zone: timer.clock_zone };
+}
+
+function deliveredByNote(t: TimerRow): string | null {
+  if (t.delivery_method === null) return null;
+  if (t.delivered_by === null) return "delivered by a hive build older than this field";
+  if (!isRepeatingWake(t)) return null;
+  const firing = t.delivered_by.match(/, firing #(\d+)$/);
+  return firing !== null && Number(firing[1]) !== t.fire_count
+    ? `firing #${t.fire_count} was claimed by a hive build older than this field; ` +
+      "that build types it into the pane and does not record delivered_by"
+    : null;
 }
 
 export const truncateBody = (body: string): string =>
   body.length > 120 ? `${cutToUnitBudget(body, 120)}…` : body;
-
-function rejectUnsafeBody(body: string): void {
-  const bad = findUnsafeControlChar(body, TEXT_ALLOWED_CONTROL_CHARS);
-  if (bad) {
-    throw new Error(
-      `body cannot contain ${bad.label} at offset ${bad.index}: it is typed literally into the target pane ` +
-        "when the wake fires, and a raw control byte reaches tmux as a keystroke instead of as text, " +
-        "silently turning the delivery into a keys call nobody chose. Tab and newline are the only control " +
-        "characters allowed - every wake in this project is multi-line prose. To send an actual keystroke " +
-        'on purpose, call agent_send(keys: [...]) against the target directly instead of scheduling it here.',
-    );
-  }
-}
 
 const baseWakeFields = (t: TimerRow, { truncate = true } = {}) => ({
   wake_id: t.id,
@@ -228,7 +196,7 @@ function createStandingWatch(
   projectId: number,
   args: { body: string; max_wait_seconds?: number; deliver_to?: number | string },
 ): Record<string, unknown> {
-  const delivery = resolveDelivery(projectId, args.deliver_to);
+  const delivery = resolveWakeDelivery(projectId, args.deliver_to);
   const maxWait = args.max_wait_seconds ?? STANDING_WATCH_LIFETIME_SECONDS;
   const row = openStandingWatch.immediate(
     projectId,
@@ -351,7 +319,7 @@ function createLeadWatch(
       note: `Project ${leadProjectId}'s lead has already ended its turn; nothing was scheduled. Read it now.`,
     };
   }
-  const delivery = resolveDelivery(home);
+  const delivery = resolveWakeDelivery(home);
   const maxWait = args.max_wait_seconds ?? 900;
   const row = openLeadWatch.immediate(home, args.body, mode, delivery, maxWait, {
     projectId: leadProjectId,
@@ -399,9 +367,12 @@ export function registerWakes(server: McpServer): void {
     "wake_set",
     {
       description:
-        "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal " +
+        "Schedule a wake-up: after delay_seconds, or at a local HH:MM time, the body is typed into the target session's terminal " +
         "as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use " +
-        "instead of polling. Write the body self-contained: ids, context, next action - it may arrive in " +
+        "repeat='daily' with at for a DST-correct daily local-time schedule. The creating server's current " +
+        "IANA zone is captured; a later OS/time-zone change needs cancel and re-set. A nonexistent local " +
+        "minute skips that date, and an ambiguous minute uses its first occurrence only. Use instead of polling. " +
+        "Write the body self-contained: ids, context, next action - it may arrive in " +
         "a session that has none of this conversation. Delivering to your OWN lead pane, where the " +
         "context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
       annotations: {
@@ -411,7 +382,9 @@ export function registerWakes(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        delay_seconds: z.number().int().positive(),
+        delay_seconds: z.number().int().positive().optional(),
+        at: z.string().optional().describe("Local wall-clock time in HH:MM format."),
+        repeat: z.enum(["daily"]).optional().describe("Repeat a clock-time wake daily."),
         body: z.string(),
         deliver_to: agentRefParam.optional().describe("Deliver to a spawned agent instead of this session."),
         repeat_every_seconds: z.number().int().positive().optional(),
@@ -426,10 +399,49 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
-        rejectUnsafeBody(args.body);
+        assertSafeWakeBody(args.body);
+        const hasDelay = args.delay_seconds != null;
+        const hasClock = args.at != null;
+        if (hasDelay === hasClock) {
+          throw new Error("wake_set requires exactly one of delay_seconds or at.");
+        }
+        if (args.repeat != null && !hasClock) {
+          throw new Error("wake_set repeat requires at.");
+        }
+        if (args.repeat_every_seconds != null && hasClock) {
+          throw new Error("wake_set cannot mix repeat_every_seconds with at; use repeat='daily'.");
+        }
+        const clockZone = hasClock ? new Intl.DateTimeFormat().resolvedOptions().timeZone : null;
+        const clockDueAt = hasClock ? nextClockDue(args.at!, clockZone!, Date.now()) : null;
         const projectId = effectiveProjectId(args.project_id);
-        const delivery = resolveDelivery(projectId, args.deliver_to);
+        const delivery = resolveWakeDelivery(projectId, args.deliver_to, "wake_set");
         return commitQueenStateWrite("wake_set", projectId, args, () => {
+          if (clockDueAt !== null) {
+            const row = db
+              .prepare(
+                `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
+                                    clock_at, clock_zone, clock_repeat)
+                 VALUES (?, ?, ?, 'delay', ?, ?, ?, ?, ?, ?)
+                 RETURNING id, due_at`,
+              )
+              .get(
+                projectId,
+                currentActor(),
+                args.body,
+                delivery.actor,
+                delivery.pane,
+                clockDueAt,
+                args.at,
+                clockZone,
+                args.repeat ?? null,
+              ) as { id: number; due_at: string };
+            return {
+              wake_id: row.id,
+              due_at: row.due_at,
+              deliver_to: delivery.actor,
+              repeating: args.repeat === "daily",
+            };
+          }
           const row = db
             .prepare(
               `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms)
@@ -442,7 +454,7 @@ export function registerWakes(server: McpServer): void {
               args.body,
               delivery.actor,
               delivery.pane,
-              args.delay_seconds,
+              args.delay_seconds!,
               args.repeat_every_seconds != null ? args.repeat_every_seconds * 1000 : null,
             ) as { id: number; due_at: string };
           return {
@@ -530,7 +542,7 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
-        rejectUnsafeBody(args.body);
+        assertSafeWakeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
 
         const selectors = [
@@ -570,7 +582,7 @@ export function registerWakes(server: McpServer): void {
               "which only the queen may watch, with lead_project_id=<that lead's project id>.",
           );
         }
-        const delivery = resolveDelivery(projectId, args.deliver_to);
+        const delivery = resolveWakeDelivery(projectId, args.deliver_to, "wake_when_idle");
 
         const snapshot = liveTargets();
 
@@ -603,7 +615,7 @@ export function registerWakes(server: McpServer): void {
                 `SELECT id, watch FROM wakes
                   WHERE project_id = ? AND owner = ? AND kind = ?
                     AND watch_scope IS NULL AND deliver_actor = ? AND deliver_pane = ?
-                    AND fired_at IS NULL AND cancelled_at IS NULL
+                    AND ${pendingOneShotWhere()}
                     AND id NOT IN (SELECT wake_id FROM lead_idle_subscriptions)`,
               )
               .all(projectId, currentActor(), `idle_${mode}`, delivery.actor, delivery.pane) as { id: number; watch: string }[]
@@ -613,7 +625,7 @@ export function registerWakes(server: McpServer): void {
           const superseded = candidates.filter(
             (id) =>
               db
-                .prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL")
+                .prepare(`UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND ${pendingOneShotWhere()}`)
                 .run(id).changes === 1,
           );
           const info = db
@@ -659,7 +671,13 @@ export function registerWakes(server: McpServer): void {
       description:
         "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates " +
         "body at 120 chars; use this to see exactly what a wake will say, or to confirm what " +
-        "wake_update just changed.",
+        "wake_update just changed. Its delivery state includes delivery_method (socket, socket-repeating, pty or " +
+        "pty-after-socket-timeout), delivered_by (the pid and build of the server that last set the delivery method, " +
+        "plus the firing number for repeating wakes), " +
+        "and socket_attempt_at, set when a wake was posted to a Claude lead's socket; " +
+        "for a repeating wake both describe its current firing (fire_count). An older repeat claim is " +
+        "identified in delivered_by_note as a claim; the older build types the firing into the pane " +
+        "without recording delivered_by.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -673,17 +691,20 @@ export function registerWakes(server: McpServer): void {
         const projectId = effectiveProjectId(args.project_id);
         const t = db
           .prepare("SELECT * FROM wakes WHERE id = ? AND project_id = ?")
-          .get(args.wake_id, projectId) as TimerRow | undefined;
+          .get(args.wake_id, projectId) as WakeRow | undefined;
         if (!t) throw new Error(`Wake ${args.wake_id} not found in this project.`);
         const hasChannel = makeChannelChecker();
         return {
           ...baseWakeFields(t, { truncate: false }),
+          ...clockScheduleFields(t),
           due_at: t.due_at,
           max_wait_at: t.max_wait_at,
           repeat_every_seconds: t.repeat_every_ms != null ? t.repeat_every_ms / 1000 : null,
-          repeating: t.repeat_every_ms != null,
+          repeating: isRepeatingWake(t),
           fire_count: t.fire_count,
           cancelled_at: t.cancelled_at,
+
+          delivered_by_note: deliveredByNote(t),
 
           first_held_at: t.first_held_at,
           ...deliveryState(t, hasChannel),
@@ -696,12 +717,13 @@ export function registerWakes(server: McpServer): void {
     {
       description:
         "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of " +
-        "delay_seconds, body, repeat_every_seconds. delay_seconds is RELATIVE TO NOW, exactly as in " +
+        "at, repeat, delay_seconds, body, repeat_every_seconds. A clock wake keeps its captured zone; " +
+        "changing at recomputes due_at, while changing repeat alone does not move it. delay_seconds is RELATIVE TO NOW, exactly as in " +
         "wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only " +
         "changes the interval used for firings AFTER this one; on its own it does not move the next " +
         "fire time. Only a still-pending wake can be edited; use wake_get to read the result back. " +
-        "delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle " +
-        "wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so " +
+        "delay_seconds and repeat_every_seconds apply to interval wakes; at and repeat apply to clock " +
+        "wakes. An idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds, so " +
         "only body can be edited on one.",
       annotations: {
         readOnlyHint: false,
@@ -711,6 +733,8 @@ export function registerWakes(server: McpServer): void {
       },
       inputSchema: {
         wake_id: idParam,
+        at: z.string().optional().describe("New local wall-clock time in HH:MM format for a clock wake."),
+        repeat: z.enum(["daily"]).optional().describe("Enable a daily repeat on a clock wake."),
         delay_seconds: z.number().int().positive().optional(),
         body: z.string().optional(),
         repeat_every_seconds: z.number().int().positive().optional(),
@@ -720,58 +744,95 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
-        if (args.delay_seconds == null && args.body == null && args.repeat_every_seconds == null) {
+        const hasIntervalTiming = args.delay_seconds != null || args.repeat_every_seconds != null;
+        const hasClockTiming = args.at != null || args.repeat != null;
+        if (!hasIntervalTiming && !hasClockTiming && args.body == null) {
           throw new Error(
-            "wake_update requires at least one of delay_seconds, body, repeat_every_seconds.",
+            "wake_update requires at least one of at, repeat, delay_seconds, body, repeat_every_seconds.",
           );
         }
+        if (args.at != null && hasIntervalTiming) {
+          throw new Error("wake_update cannot mix at with delay_seconds or repeat_every_seconds.");
+        }
+        if (args.body != null) assertSafeWakeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
+        return commitQueenStateWrite("wake_update", projectId, args, () =>
+          db.transaction(() => {
+            const timer = db
+              .prepare(
+                `SELECT * FROM wakes
+                 WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL
+                   AND ${ACTIVE_TIMER_WHERE}`,
+              )
+              .get(args.wake_id, projectId, currentActor()) as (TimerRow & ClockTimerFields) | undefined;
+            if (timer === undefined) return { wake_id: args.wake_id, updated: false, due_at: null };
 
-        if (args.delay_seconds != null || args.repeat_every_seconds != null) {
-          const target = db
-            .prepare(
-              `SELECT kind FROM wakes WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL
-                 AND ${ACTIVE_TIMER_WHERE}`,
-            )
-            .get(args.wake_id, projectId, currentActor()) as { kind: string } | undefined;
-          if (target && target.kind !== "delay") {
-            throw new Error(
-              `Wake ${args.wake_id} is a ${target.kind} wake (from wake_when_idle): it fires on ` +
-                "watched-agent state and max_wait_seconds, not due_at, so delay_seconds and " +
-                "repeat_every_seconds have no effect on it. Only body can be edited on it.",
+            const isClockWake = timer.clock_at != null || timer.clock_zone != null || timer.clock_repeat != null;
+            if ((hasClockTiming || hasIntervalTiming) && timer.kind !== "delay") {
+              const fields = isClockWake ? "at and repeat" : "delay_seconds, repeat_every_seconds, at and repeat";
+              throw new Error(
+                `Wake ${args.wake_id} is a ${timer.kind} wake (from wake_when_idle): it fires on ` +
+                  `watched-agent state and max_wait_seconds, so ${fields} do not apply. Only body can be edited on it.`,
+              );
+            }
+            if (hasClockTiming && !isClockWake) {
+              throw new Error(`Wake ${args.wake_id} is not a clock-time wake; at and repeat apply to clock wakes only.`);
+            }
+            if (hasIntervalTiming && isClockWake) {
+              throw new Error(`Wake ${args.wake_id} is a clock-time wake; use at and repeat instead of interval timing.`);
+            }
+
+            const sets: string[] = [];
+            const params: unknown[] = [];
+            if (args.body != null) {
+              sets.push("body = ?");
+              params.push(args.body);
+            }
+            if (isClockWake) {
+              if (args.at != null) {
+                const dueAt = nextClockDue(args.at, timer.clock_zone ?? "", Date.now());
+                sets.push("clock_at = ?", "due_at = ?");
+                params.push(args.at, dueAt);
+              }
+              if (args.repeat != null) {
+                sets.push("clock_repeat = ?");
+                params.push(args.repeat);
+              }
+            } else {
+              if (args.repeat_every_seconds != null) {
+                sets.push("repeat_every_ms = ?");
+                params.push(args.repeat_every_seconds * 1000);
+              }
+              if (args.delay_seconds != null) {
+                sets.push("due_at = datetime('now', printf('+%d seconds', ?))");
+                params.push(args.delay_seconds);
+              }
+            }
+            params.push(
+              args.wake_id,
+              projectId,
+              currentActor(),
+              timer.clock_at ?? null,
+              timer.clock_zone ?? null,
+              timer.clock_repeat ?? null,
+              timer.due_at,
+              timer.repeat_every_ms,
+              timer.fired_at,
+              timer.cancelled_at,
             );
-          }
-        }
-        const sets: string[] = [];
-        const params: unknown[] = [];
-
-        if (args.body != null) {
-          rejectUnsafeBody(args.body);
-          sets.push("body = ?");
-          params.push(args.body);
-        }
-
-        if (args.repeat_every_seconds != null) {
-          sets.push("repeat_every_ms = ?");
-          params.push(args.repeat_every_seconds * 1000);
-        }
-
-        if (args.delay_seconds != null) {
-          sets.push("due_at = datetime('now', printf('+%d seconds', ?))");
-          params.push(args.delay_seconds);
-        }
-        params.push(args.wake_id, projectId, currentActor());
-
-        return commitQueenStateWrite("wake_update", projectId, args, () => {
-          const row = db
-            .prepare(
-              `UPDATE wakes SET ${sets.join(", ")}
-               WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL AND ${ACTIVE_TIMER_WHERE}
-               RETURNING due_at`,
-            )
-            .get(...params) as { due_at: string } | undefined;
-          return { wake_id: args.wake_id, updated: row !== undefined, due_at: row?.due_at ?? null };
-        });
+            const row = db
+              .prepare(
+                `UPDATE wakes SET ${sets.join(", ")}
+                 WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL
+                   AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ? AND due_at IS ?
+                   AND repeat_every_ms IS ? AND fired_at IS ? AND cancelled_at IS ?
+                   AND ${ACTIVE_TIMER_WHERE}
+                 RETURNING due_at`,
+              )
+              .get(...params) as { due_at: string } | undefined;
+            return { wake_id: args.wake_id, updated: row !== undefined, due_at: row?.due_at ?? null };
+          }).immediate(),
+        );
       }),
   );
 
@@ -826,7 +887,7 @@ export function registerWakes(server: McpServer): void {
               ? db
                   .prepare(
                     `UPDATE wakes SET cancelled_at = datetime('now')
-                     WHERE parent_wake_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+                     WHERE parent_wake_id = ? AND ${pendingOneShotWhere()}`,
                   )
                   .run(args.wake_id).changes
               : 0;
@@ -841,7 +902,7 @@ export function registerWakes(server: McpServer): void {
       description:
         "List pending wake-ups in this project, plus recently_delivered: the last " +
         `${RECENTLY_FIRED_LIMIT} one-shot wakes that have already fired, with their delivery ` +
-        "state (typed_at, held_at/held_reason, confirmation). A one-shot wake leaves the " +
+        "state (typed_at, held_at/held_reason, confirmation, delivery_method, delivered_by, socket_attempt_at). A one-shot wake leaves the " +
         "pending list the moment it fires; recently_delivered is where to check whether it " +
         "was actually typed and, if its target has a confirmation channel, acknowledged.",
       annotations: {
@@ -860,9 +921,10 @@ export function registerWakes(server: McpServer): void {
           project_id: projectId,
           wakes: pendingWakes(projectId).map((t) => ({
             ...baseWakeFields(t),
+            ...clockScheduleFields(t),
             due_at: t.due_at,
             max_wait_at: t.max_wait_at,
-            repeating: t.repeat_every_ms != null,
+            repeating: isRepeatingWake(t),
             fire_count: t.fire_count,
             ...deliveryState(t, hasChannel),
           })),

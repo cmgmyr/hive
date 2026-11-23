@@ -1,0 +1,1 @@
+{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"synthetic","limit_name":"weekly","primary":{"used_percent":85,"window_minutes":10080,"resets_at":1793555100},"secondary":null,"rate_limit_reached_type":null}}}

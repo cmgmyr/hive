@@ -1,6 +1,6 @@
 import { backupNow } from "./backup.js";
 import { dataDir, db } from "./db.js";
-import { LEAD_KIND } from "./spawn.js";
+import { LEAD_KIND } from "./agentKinds.js";
 import { type AliveSnapshot, foreignSocket, liveTargets, observationFailed, rowOwnership, type RowPaneIdentity } from "./tmux.js";
 
 export const PROJECT_OWNER_TABLES = [
@@ -11,6 +11,7 @@ export const PROJECT_OWNER_TABLES = [
   "agents",
   "wakes",
   "command_trust",
+  "questions",
 ] as const;
 
 const COUNTED_TABLES: readonly [string, string][] = [

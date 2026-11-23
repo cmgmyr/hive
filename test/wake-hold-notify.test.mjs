@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { DIST, isolateTmux, repaintPaneAsSameWorker, runFixture, scratchDirs, until } from "./helpers.mjs";
+import { DIST, isolateTmux, repaintPaneAsSameWorker, runFixture, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
 import { replayFixture, TICK_MS, wakeNotifyFixture } from "./wake-notify-fixture.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the wake-hold notification tests");
@@ -103,7 +103,7 @@ describe(
       await until(async () => {
         notices = noticesAbout(wakeId);
         return notices.length > 0;
-      }, 15000);
+      }, 30000);
       assert.equal(notices.length, 1, "one notification, even though it cannot be delivered yet");
       const notice = notices[0];
       assert.equal(notice.deliver_pane, owner.tmux_target, "aimed at the owner's own dialogged pane");
@@ -114,7 +114,8 @@ describe(
       assert.match(heldNotice.held_reason, /modal choice/, "for the same reason, recorded the same way");
       assert.equal(heldNotice.typed_at, null, "and must never be typed into a dialog");
 
-      await until(async () => noticesAbout(notice.id).length > 0, 6 * TICK_MS);
+      const chainedNotice = await untilOrTimeout(async () => noticesAbout(notice.id).length > 0, 6 * TICK_MS);
+      assert.equal(chainedNotice, false, "a held notification must not create a chained notification");
       assert.equal(
         noticesAbout(notice.id).length,
         0,

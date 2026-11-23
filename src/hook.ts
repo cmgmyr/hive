@@ -12,6 +12,8 @@ interface HookPayload {
   background_tasks?: unknown;
   session_id?: unknown;
   transcript_path?: unknown;
+  error?: unknown;
+  last_assistant_message?: unknown;
 }
 
 interface HookOwnerRow {
@@ -20,6 +22,7 @@ interface HookOwnerRow {
   status: string;
   codex_home: string;
   session_id: string;
+  forked_from_session_id: string;
 }
 
 function canonicalPathWithMissingSuffix(input: string): string | null {
@@ -75,6 +78,26 @@ function acceptsWorkerHook(
     typeof payload.session_id === "string" && payload.session_id !== "" &&
     row.session_id === payload.session_id
   );
+}
+
+async function acceptsForkHook(
+  row: HookOwnerRow,
+  payload: HookPayload,
+  sessionsRoot: string,
+): Promise<boolean> {
+  if (!row.forked_from_session_id) return acceptsWorkerHook(row, payload, sessionsRoot);
+  if (payload.session_id === row.forked_from_session_id) return false;
+  if (typeof payload.session_id !== "string" || typeof payload.transcript_path !== "string") return false;
+  try {
+    const { findCodexFork } = await import("./codexHome.js");
+    const child = findCodexFork(row.codex_home, row.forked_from_session_id);
+    if (!child || child.sessionId !== payload.session_id) return false;
+    const reported = canonicalPathWithMissingSuffix(payload.transcript_path);
+    const discovered = canonicalPathWithMissingSuffix(child.transcriptPath);
+    return reported !== null && reported === discovered && acceptsWorkerHook(row, payload, sessionsRoot);
+  } catch {
+    return false;
+  }
 }
 
 function validCheckpointThreshold(): boolean {
@@ -205,6 +228,14 @@ async function stopProcessesForEndedLead(actorId: string, payload: HookPayload):
     .prepare("SELECT project_id, command FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'")
     .get(actorId) as { project_id: number; command: string } | undefined;
   if (!row) return;
+  // A deliberate handoff's predecessor ending is not the lead ending; its successor keeps the crew.
+  const lead = db.prepare("SELECT id FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'").get(actorId) as
+    | { id: number }
+    | undefined;
+  if (lead !== undefined) {
+    const { predecessorFence } = await import("./leadState.js");
+    if (predecessorFence(lead.id, payload.session_id)) return;
+  }
 
   // Imported here and nowhere above: harnesses.ts itself pulls tmux at module scope, and every
   // other event in this file runs on every turn of every session without needing any of it.
@@ -213,6 +244,23 @@ async function stopProcessesForEndedLead(actorId: string, payload: HookPayload):
 
   const { stopAllProcesses, STOP_REASONS } = await import("./processes.js");
   stopAllProcesses(row.project_id, STOP_REASONS.leadSessionEnded);
+}
+
+// Bound to the pid of the pane this hook runs in, not to agents.pane_pid: on a fresh launch this can
+// run before cmdLead records the new pane. The scheduler uses it only when the two pids agree.
+async function registerLeadMessagingSocket(actorId: string): Promise<void> {
+  const raw = process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? "";
+  const pane = process.env.TMUX_PANE ?? "";
+  let socket = isAbsolute(raw) && !raw.includes("\0") ? raw : "";
+  let pid = "";
+  if (socket !== "" && pane !== "") {
+    const { panePidForRecord } = await import("./tmux.js");
+    pid = panePidForRecord(pane);
+  }
+  if (pid === "") socket = "";
+  db.prepare(
+    "UPDATE agents SET claude_messaging_socket = ?, claude_messaging_pane_pid = ? WHERE actor_id = ? AND kind = 'lead' AND status = 'running'",
+  ).run(socket, pid, actorId);
 }
 
 function reconcileSessionId(actorId: string, payload: HookPayload): void {
@@ -268,13 +316,17 @@ if (process.argv[2] === "post_tool_use") {
     if (kind === "codex" && validCheckpointThreshold() && actorId.startsWith("agent:")) {
       suppliedPayload = readPayload();
       const { db } = await import("./db.js");
-      const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
+      const row = db.prepare("SELECT kind, command, status, codex_home, session_id, forked_from_session_id FROM agents WHERE actor_id = ?")
         .get(actorId) as HookOwnerRow | undefined;
       if (row?.kind === "agent") {
         const { harnessFor } = await import("./harnesses.js");
         if (harnessFor(row.command).name === "codex") {
           if (row.status !== "running") process.exit(0);
-          if (typeof row.codex_home === "string" && row.codex_home !== "") {
+          if (row.forked_from_session_id) {
+            if (!row.codex_home) process.exit(0);
+            const { codexHomeDir } = await import("./codexHome.js");
+            if (!await acceptsForkHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) process.exit(0);
+          } else if (typeof row.codex_home === "string" && row.codex_home !== "") {
             const { codexHomeDir } = await import("./codexHome.js");
             if (!acceptsWorkerHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
               process.exit(0);
@@ -297,8 +349,28 @@ try {
   if (actorId) {
     const event = process.argv[2] ?? "";
     const hookPayload = readPayload();
-    const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
+    if (event === "stop_failure") {
+      try {
+        const { observeClaudeStopFailure } = await import("./usageLimit.js");
+        const row = db.prepare("SELECT id, command, kind, status FROM agents WHERE actor_id = ? AND status = 'running'")
+          .get(actorId) as { id: number; command: string; kind: string; status: string } | undefined;
+        const { harnessFor } = await import("./harnesses.js");
+        if (row && ["agent", "lead"].includes(row.kind) && harnessFor(row.command).name === "claude" && hookPayload.error === "rate_limit") {
+          reconcileSessionId(actorId, hookPayload);
+          reconcileTranscriptPath(actorId, hookPayload);
+          observeClaudeStopFailure(row.id, hookPayload, Date.now());
+        }
+      } catch {}
+      record(actorId, event, UNCHANGED);
+      process.exit(0);
+    }
+    const row = db.prepare("SELECT kind, command, status, codex_home, session_id, forked_from_session_id FROM agents WHERE actor_id = ?")
       .get(actorId) as HookOwnerRow | undefined;
+    if (row?.kind === "agent" && row.forked_from_session_id) {
+      if (hookPayload.session_id === row.forked_from_session_id) process.exit(0);
+      const { harnessFor } = await import("./harnesses.js");
+      if (harnessFor(row.command).name === "claude" && hookPayload.session_id !== row.session_id) process.exit(0);
+    }
     let guarded = false;
     let state: string | null = null;
     if (row?.kind === "agent") {
@@ -306,8 +378,13 @@ try {
       if (harnessFor(row.command).name === "codex") {
         if (row.status !== "running") process.exit(0);
         const { codexHomeDir } = await import("./codexHome.js");
+        if (row.forked_from_session_id) {
+          if (!row.codex_home || !await acceptsForkHook(row, hookPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
+            process.exit(0);
+          }
+        }
         const result = db.transaction(() => {
-          const current = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
+          const current = db.prepare("SELECT kind, command, status, codex_home, session_id, forked_from_session_id FROM agents WHERE actor_id = ?")
             .get(actorId) as HookOwnerRow | undefined;
           if (current?.kind === "agent" && harnessFor(current.command).name === "codex" && current.status !== "running") {
             return { status: "inactive" as const, state: null };
@@ -316,7 +393,9 @@ try {
             return { status: "changed" as const, state: null };
           }
           const sessionsRoot = join(codexHomeDir(current.codex_home), "sessions");
-          if (!acceptsWorkerHook(current, hookPayload, sessionsRoot)) return { status: "rejected" as const, state: null };
+          if (current.forked_from_session_id !== row.forked_from_session_id || !acceptsWorkerHook(current, hookPayload, sessionsRoot)) {
+            return { status: "rejected" as const, state: null };
+          }
           const state = applyWorkerTransition(actorId, event);
           reconcileSessionId(actorId, hookPayload);
           reconcileTranscriptPath(actorId, hookPayload);
@@ -332,10 +411,35 @@ try {
     if (!guarded) state = applyWorkerTransition(actorId, event);
 
     // A lead's turn state is its own table; agents.agent_state stays worker-only.
-    if (process.env.HIVE_LEAD === "1" && (event === "prompt" || event === "stop" || event === "session_end")) {
+    if (
+      process.env.HIVE_LEAD === "1" &&
+      ["prompt", "stop", "session_end"].includes(event)
+    ) {
       try {
         const { applyLeadHook } = await import("./leadState.js");
         applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()));
+      } catch {
+
+      }
+    }
+
+    if (event === "stop" && process.env.HIVE_LEAD === "1") {
+      try {
+        const started = db
+          .prepare(
+            `SELECT 1 AS hit FROM lead_handoffs h JOIN agents a ON a.id = h.lead_agent_id
+              WHERE a.actor_id = ? AND a.kind = 'lead' AND h.state = 'started'`,
+          )
+          .get(actorId);
+        if (started !== undefined) (await import("./leadHandoff.js")).completeHandoffOnStop(actorId);
+      } catch {
+
+      }
+    }
+
+    if (event === "session_start" && process.env.HIVE_LEAD === "1") {
+      try {
+        await registerLeadMessagingSocket(actorId);
       } catch {
 
       }
@@ -355,7 +459,16 @@ try {
       db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
     }
 
-    record(actorId, event, state ?? UNCHANGED);
+    let logState = state ?? UNCHANGED;
+    if (event === "prompt" && process.env.HIVE_LEAD === "1") {
+      try {
+        const { isHiveFirstMessage, FIRST_MESSAGE_LOG_STATE } = await import("./leadState.js");
+        if (isHiveFirstMessage(readPayload())) logState = FIRST_MESSAGE_LOG_STATE;
+      } catch {
+
+      }
+    }
+    record(actorId, event, logState);
   }
 } catch {
 

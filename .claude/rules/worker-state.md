@@ -2,14 +2,24 @@
 paths:
   - "src/hook.ts"
   - "src/backgroundTasks.ts"
+  - "src/claudeWake.ts"
   - "src/hooks.ts"
   - "src/scheduler.ts"
   - "src/tools/wakes.ts"
+  - "src/wakeTarget.ts"
+  - "src/wakeSql.ts"
   - "src/firstPrompt.ts"
   - "src/dashboard.ts"
+  - "src/crew.ts"
   - "src/processes.ts"
   - "src/leadState.ts"
   - "src/leadWatch.ts"
+  - "src/leadMessageDelivery.ts"
+  - "src/leadMessage.ts"
+  - "src/leadHandoffState.ts"
+  - "src/leadHandoff.ts"
+  - "src/stateProvenance.ts"
+  - "src/portfolio.ts"
 ---
 
 # Worker state, and why it has an append-only log
@@ -102,11 +112,19 @@ like any other, and reporting it as a crash was the smaller half of that bug.
 
 **A fourth generated notice reports a changed build to the lead whose own server detected it.** `reportRunningBuildChange` must target only its own running `kind='lead'` row and a confirmed-live, classifiable pane. Keep it parentless, with no staleness trailer, and file it once per process per distinct disk `build_id` (a hash of the package version plus `dist/`, so a byte-identical rebuild at one version files nothing), only latching after insertion succeeds. A worker's server files no restart notice. Authored wake bodies stay verbatim.
 
+**A fifth generated addition is the watched-pane trailer, and it rides on every wake that watches an agent, one-shot or standing.** `watchedTail` (`src/scheduler.ts`) appends, for each of up to three watched workers, either that worker's pane tail or a note that its row is closed, on a foreign socket or not confirmed live, after the body, to a lead or to a worker. It is not a notice and has no author. Your text is still verbatim; it is simply not the only text delivered.
+
+**A sixth generated notice explains a handoff held by live background work.** After five minutes, file one parentless notice naming the tasks and the choice to stop them and record what the successor should restart, or keep them running and wait. Repeat only when the blocker set changes. Keep the hold start, last blocker set and notice id in one project-scoped `handoff-wait:<id>` kv row. Delete it and cancel an undelivered notice when the request schedules, ends or is cancelled. Never file a notice for a delivered, cancelled or failed request, or without a live, classifiable lead pane. The maintainer approved this class shipping on by default on 2026-11-11.
+
 **This rule is about WAKE BODIES and nothing else.** `agent_send`'s `text` is a separate channel with its own, differently-shaped shortening for lead-bound messages; do not read either rule as governing the other (`.claude/rules/tmux-and-panes.md`).
 
-**`[hive:%` and `[hive wake #` are excluded from `conversationHoldsWake`.** Sender tags now mark every `agent_send` text delivery, and the extracted prompt is checked at offset 0, so worker messages do not count as human conversation. Wake bodies keep their separate `[hive wake #` marker.
+**`[hive:%` and `[hive wake #` are excluded from `conversationHoldsWake`.** Sender tags now mark every `agent_send` text delivery, and the extracted prompt is checked at offset 0, so worker messages do not count as human conversation. Wake bodies keep their separate `[hive wake #` marker. A worker message delivered over the lead's socket is excluded by one more anchored clause: hive's own envelope at offset 0 whose body opens `[hive:worker NAME] [message #N,`. Do not widen it into a general envelope filter; a peer session's envelope and a human quoting hive's are still conversation.
 
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism and its measurements: `.claude/skills/hive-internals/references/tmux-and-panes.md`.
+
+**The quiet-messaging socket last hop is the one place hive waits for a confirmation, and only for itself.** With `quiet_messaging` on, a wake to a Claude lead is posted to the lead's cross-session socket: the same rendered text, wrapped in a named-sender envelope with one generated footer line. A socket write is never `typed_at` and never a confirmation. Only that hop has a timeout: no prompt hook 60 s after the lead's first turn end following the post (or after the post, when no turn was running) types the same firing once, marked `re-delivered`. Never replay an ordinary unconfirmed PTY wake, never start that clock at the post for a busy lead, and never route a worker or a Codex lead through the socket. Never route a lead whose recorded command lacks its `lead-<project id>-hooks.json` settings path; its running session cannot confirm the post. A repeating wake's delivery columns describe its CURRENT firing only: never write, confirm or fall back for a repeating socket firing without keying on (wake id, `fire_count`), never confirm it from anything but that firing's exact `[hive wake #N firing #F` marker, never let a fallback CAS accept an attempt older than the row's `fired_at`, and never claim the next firing while the current one is posted and unsettled. Old-build servers sharing the store obey none of that and are a documented limit (restart them), not a fence to build, with one carve-out: a lead's handoff hold is fenced at the store for wakes by trigger `fence_handoff_held_claim`, so no build's claim of a held lead's wake lands; only the socket last hop below that claim stays an old-build limit. A quiet worker message to a lead is the same hop with its own row in `agent_messages`, not a wake: confirm it only from its exact `[hive:worker NAME] [message #N,` marker, never treat the socket write as delivery, never let a fallback paste twice, and mark a fallback complete only after its own Enter succeeds or prompt evidence arrives, never a claim a crash or a failed paste left behind. Mechanism and the spike behind it: `.claude/skills/hive-internals/references/worker-state.md`.
+
+**A lead handoff holds its lead's wakes and messages until the successor's first completed turn, never until `started`.** `started` is published before Claude is exec'd, and a booting TUI swallows what is typed into it. Never release the hold on exec, a live pid, SessionStart or socket registration; release on the recorded Stop `completeHandoffOnStop` accepts, and change `handoffHoldsAutomation` and the trigger together through a new migration. Measurement and the never-ready bound: `.claude/skills/hive-internals/references/worker-state.md`.
 
 ## A standing watch reports its owner's crew only, and a lead-bound wake can hold for an active conversation
 

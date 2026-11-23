@@ -99,6 +99,20 @@ describe("wake_get / wake_update", () => {
     assert.ok(got.cancelled_at, "a cancelled wake must still be readable, with its cancellation visible");
   });
 
+  it("reports delivered_by for recent deliveries and explains a pre-field delivery", async () => {
+    const legacy = seedTimer({ fired: true });
+    db.prepare("UPDATE wakes SET delivery_method = 'pty', delivered_by = NULL WHERE id = ?").run(legacy.id);
+    const old = await mcp.call("wake_get", { wake_id: legacy.id });
+    assert.equal(old.delivered_by, null);
+    assert.equal(old.delivered_by_note, "delivered by a hive build older than this field");
+
+    const current = seedTimer({ fired: true });
+    db.prepare("UPDATE wakes SET delivery_method = 'pty', delivered_by = 'pid 42, hive 1.9.0 (abc1234)' WHERE id = ?").run(current.id);
+    const listed = await mcp.call("wake_list");
+    const recent = listed.recently_delivered.find((w) => w.wake_id === current.id);
+    assert.equal(recent.delivered_by, "pid 42, hive 1.9.0 (abc1234)");
+  });
+
   it("edits in place: the wake keeps its id, and no second row is created", async () => {
     const seeded = seedTimer();
     const before = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
@@ -433,5 +447,30 @@ describe("control bytes in a wake body (issue #150)", () => {
       mcp.call("wake_when_idle", { scope: "project", body: "status" }),
       /ETX \(Ctrl-C\), 0x03/,
     );
+  });
+});
+
+describe("a repeating wake's current socket firing", () => {
+  it("wake_get and wake_list both report the current firing's count, method and attempt", async () => {
+    for (const method of ["socket-repeating", "pty-after-socket-timeout"]) {
+      const seeded = seedTimer({ repeatEveryMs: 60_000 });
+      const attempt = db
+        .prepare(
+          `UPDATE wakes SET fire_count = 3, fired_at = datetime('now', '-10 seconds'), delivery_method = ?,
+             socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-9 seconds')
+           WHERE id = ? RETURNING socket_attempt_at`,
+        )
+        .get(method, seeded.id).socket_attempt_at;
+
+      const got = await mcp.call("wake_get", { wake_id: seeded.id });
+      const listed = (await mcp.call("wake_list")).wakes.find((w) => w.wake_id === seeded.id);
+      for (const view of [got, listed]) {
+        assert.equal(view.fire_count, 3);
+        assert.equal(view.delivery_method, method);
+        assert.equal(view.socket_attempt_at, attempt);
+        assert.equal(view.typed_at, null);
+        assert.notEqual(view.confirmation, "confirmed");
+      }
+    }
   });
 });

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 
-import { isolateTmux, McpClient, scratchDirs, seedLeadRow } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, McpClient, scratchDirs, seedLeadRow } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the agent_rename lead guard tests");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 
 describe("agent_rename refuses the lead", { skip: hasTmux ? false : "tmux is not installed" }, () => {

@@ -16,7 +16,7 @@ Run `hive init` to see where generated output lives. The dashboard is generated 
 
 ## What it shows
 
-The page starts with current status cards for workers, the next wake, todos, configured processes, and recent activity. Its detail sections show throughput, the board pad, open todos, configured processes when present, other pads, pending wakes, and recent activity.
+The page starts with current status cards for workers, the next wake, todos, configured processes, and recent activity. Its detail sections show throughput, the board pad, open todos, configured processes when present, other pads, pending wakes, and recent activity. When the project has pending or defaulted questions, a Questions section lists each one with its options, default answer, asker, age and the `hive answer <id>` command that answers it.
 
 The dashboard is read-only. It escapes displayed project data and includes no form that writes to hive.
 

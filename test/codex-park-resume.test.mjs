@@ -3,13 +3,14 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { DIST, isolateTmux, liveAgentRow, McpClient, runNode, scratchDirs, scratchGit, until } from "./helpers.mjs";
+import { assertScratchStore, DIST, isolateTmux, liveAgentRow, McpClient, runNode, scratchDirs, scratchGit, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the codex park/resume tests");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 
 scratchGit(dirs.projectDir, "init", "-q");

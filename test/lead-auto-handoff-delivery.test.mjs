@@ -1,0 +1,681 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { after, beforeEach, describe, it } from "node:test";
+
+import { DIST, REPO, assertScratchStore, clearHiveEnv, isolateTmux, runNode, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
+
+const { hasTmux, cleanup } = isolateTmux("the lead auto-handoff delivery tests");
+const { dataDir, tmp } = scratchDirs();
+clearHiveEnv();
+delete process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+process.env.HIVE_DATA_DIR = dataDir;
+await assertScratchStore();
+
+const { db, migrate } = await import("../dist/db.js");
+const handoff = await import("../dist/leadHandoff.js");
+const { tick } = await import("../dist/scheduler.js");
+const { sendQuietLeadMessage, retryQuietLeadMessages } = await import("../dist/leadMessageDelivery.js");
+const { tmuxSocketPath } = await import("../dist/tmux.js");
+migrate();
+
+const HOOK = join(DIST, "hook.js");
+const fixture = (name) => JSON.parse(readFileSync(join(REPO, "test", "fixtures", "hook-payloads", name), "utf8"));
+const SESSION = fixture("lead-claude-prompt.json").session_id;
+const TRANSCRIPT = join(tmp, "lead.jsonl");
+const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
+const BUDGET = { warn: 3, stop: 10, auto_handoff: true };
+const sessions = [];
+after(() => cleanup(...sessions));
+
+const projectDir = mkdtempSync(join(tmp, "project-"));
+writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\n");
+const project = db.prepare("INSERT INTO projects (name, path) VALUES ('handoff', ?) RETURNING id").get(projectDir).id;
+
+function turns(n) {
+  writeFileSync(
+    TRANSCRIPT,
+    Array.from({ length: n }, (_, i) => JSON.stringify({ type: "assistant", message: { id: `m${i}`, model: "claude" } })).join("\n") + "\n",
+  );
+}
+
+let paneCount = 0;
+function sinkPane({ ready = false } = {}) {
+  const session = `lah-${process.pid}-${paneCount++}`;
+  const sink = join(tmp, `${session}.sink`);
+  writeFileSync(sink, "");
+  const screen = ready ? `cat '${join(REPO, "test", "fixtures", "panes", "ready-idle.txt")}'; ` : "";
+  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", `${screen}cat > '${sink}'`], { stdio: "ignore" });
+  sessions.push(session);
+  const [pane, pid] = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}\t#{pane_pid}"], { encoding: "utf8" })
+    .trim()
+    .split("\t");
+  return { pane, pid, sink };
+}
+
+function seedLead({ pane = "%9800", pid = "4242" } = {}) {
+  return db
+    .prepare(
+      `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status, created_at)
+       VALUES (?, 'lead:d', 'lead', 'lead', ?, ?, ?, 'claude', '/tmp', 'running', datetime('now', '-60 seconds')) RETURNING *`,
+    )
+    .get(project, pane, ownSocket, pid);
+}
+
+function seedWorker() {
+  return db
+    .prepare(
+      `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status)
+       VALUES (?, 'agent:w', 'w', 'agent', '%9801', '1', 'claude', '/tmp', 'running') RETURNING *`,
+    )
+    .get(project);
+}
+
+const payload = (name, extra = {}) => JSON.stringify({ ...fixture(name), session_id: SESSION, transcript_path: TRANSCRIPT, ...extra });
+async function hook(event, body) {
+  const { code } = await runNode(HOOK, [event], { dataDir, env: { HIVE_AGENT_ID: "lead:d", HIVE_LEAD: "1" }, stdin: body });
+  assert.equal(code, 0);
+}
+const prompt = () => hook("prompt", payload("lead-claude-prompt.json"));
+const stop = (name = "lead-claude-stop.json") => hook("stop", payload(name));
+const drive = (budget = BUDGET) => handoff.driveLeadHandoff("lead:d", () => budget);
+const active = (leadId) => handoff.readActiveHandoff(leadId);
+const wake = (id) => db.prepare("SELECT * FROM wakes WHERE id = ?").get(id);
+const quietHuman = () => db.prepare("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-10 minutes')").run();
+
+beforeEach(() =>
+  db.exec(
+    "DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM agent_messages; DELETE FROM lead_turn_state; DELETE FROM agent_state_log; DELETE FROM leases; DELETE FROM agents;",
+  ),
+);
+
+describe("lead auto-handoff delivery", () => {
+  it("the same blockers across a completed turn do not resend", needsTmux, async () => {
+    const pane = sinkPane({ ready: true });
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    quietHuman();
+    db.exec("UPDATE agent_state_log SET created_at = datetime('now', '-10 minutes')");
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    const notices = () => db.prepare("SELECT * FROM wakes WHERE id != ? ORDER BY id").all(row.request_wake_id);
+    const saved = () => db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key)?.value;
+    const ageHold = () => db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    ageHold();
+    drive();
+    assert.equal(notices().length, 1);
+    assert.ok(await until(async () => { await tick(); return readFileSync(pane.sink, "utf8").includes("is waiting on"); }, 5000));
+    assert.notEqual(wake(notices()[0].id).typed_at, null);
+    const beforePrompt = saved();
+    await hook("prompt", payload("lead-claude-prompt.json", { prompt: `[hive wake #${notices()[0].id}] waiting notice` }));
+    drive();
+    assert.equal(saved(), beforePrompt, "stale evidence leaves the dedupe row as it is");
+    await stop("stop-shell-running.json");
+    drive();
+    ageHold();
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+    assert.equal(notices().length, 1);
+    assert.equal(wake(notices()[0].id).fire_count, 1);
+    assert.equal(readFileSync(pane.sink, "utf8").split("is waiting on").length - 1, 1);
+  });
+
+  it("a background-held request gets one notice after five minutes and another only when its blockers change", needsTmux, async () => {
+    const pane = sinkPane();
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    quietHuman();
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    const notices = () => db.prepare("SELECT * FROM wakes WHERE id != ? ORDER BY id").all(row.request_wake_id);
+    assert.equal(notices().length, 0);
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    assert.equal(notices().length, 1);
+    assert.match(notices()[0].body, /handoff #\d+ is waiting on 1 live background task.*shell/);
+    assert.equal(notices()[0].body.split("\n")[0], `hive: handoff #${row.id} is waiting on 1 live background task (shell). Either stop them, noting in your handoff pad anything the next session should restart, and the handoff proceeds; or keep them running and the handoff waits until they end.`);
+    assert.equal(notices()[0].parent_wake_id, null);
+    drive();
+    assert.equal(notices().length, 1);
+    await hook("stop", payload("lead-claude-stop.json", { background_tasks: [{ type: "shell", status: "running", description: "different work" }] }));
+    drive();
+    assert.equal(notices().length, 1, "a changed blocker starts a new five-minute hold");
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    assert.equal(notices().length, 2);
+    assert.match(notices()[1].body, /different work/);
+    assert.notEqual(notices()[0].cancelled_at, null, "the obsolete queued notice cannot arrive later");
+    await stop();
+    quietHuman();
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+    assert.equal(db.prepare("SELECT * FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined);
+    assert.notEqual(notices()[1].cancelled_at, null);
+    drive();
+    assert.equal(notices().length, 2, "no notice after scheduling the request");
+  });
+
+  it("cancelled, failed and delivered requests leave no background-notice kv residue or new notices", needsTmux, async () => {
+    for (const ending of ["cancelled", "failed", "delivered", "completed"]) {
+      db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM lead_turn_state; DELETE FROM agents;");
+      const pane = sinkPane();
+      const lead = seedLead(pane);
+      turns(5);
+      await prompt();
+      await stop("stop-shell-running.json");
+      drive();
+      const row = active(lead.id);
+      const key = `handoff-wait:${row.id}`;
+      assert.ok(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key));
+      if (ending === "cancelled") db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(row.request_wake_id);
+      if (ending === "delivered") db.prepare("UPDATE wakes SET fired_at = datetime('now'), fire_count = 1 WHERE id = ?").run(row.request_wake_id);
+      if (ending === "failed") handoff.failHandoff(row.id, "test failure");
+      if (ending === "completed") handoff.casHandoff(row.id, ["pending"], { state: "completed" });
+      drive();
+      assert.equal(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined, ending);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes WHERE id != ?").get(row.request_wake_id).n, 0, ending);
+    }
+  });
+
+  it("resolving a request cancels its queued wait notice atomically before another scheduler can deliver it", needsTmux, async () => {
+    const pane = sinkPane();
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    const notice = db.prepare("SELECT * FROM wakes WHERE id != ?").get(row.request_wake_id);
+    assert.equal(notice.cancelled_at, null);
+    assert.equal(handoff.casHandoff(row.id, ["pending"], { state: "requested" }), true);
+    assert.notEqual(wake(notice.id).cancelled_at, null);
+    assert.equal(db.prepare("SELECT * FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined);
+    await tick();
+    assert.equal(wake(notice.id).fire_count, 0);
+    assert.doesNotMatch(readFileSync(pane.sink, "utf8"), /is waiting on/);
+  });
+
+  it("a pending request with only monitors is scheduled once quiet", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop("stop-monitors-running.json");
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending", "the human quiet window still applies");
+    assert.equal(wake(pending.request_wake_id).due_at, null);
+    quietHuman();
+    drive();
+    const requested = active(lead.id);
+    assert.equal(requested.state, "requested");
+    assert.equal(requested.request_wake_id, pending.request_wake_id);
+    assert.notEqual(wake(requested.request_wake_id).due_at, null);
+    assert.equal(handoff.backgroundVeto(db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id)), null);
+    drive();
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes").get().n, 1);
+  });
+
+  it("a shell still holds request scheduling even alongside monitors", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await hook("stop", payload("lead-claude-stop.json", { background_tasks: [
+      { type: "monitor", status: "running" }, { type: "shell", status: "running" },
+    ] }));
+    quietHuman();
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending");
+    assert.equal(wake(pending.request_wake_id).due_at, null);
+    assert.equal(pending.blocked_reason, "1 background task still live (shell)");
+  });
+
+  it("the pending status segment shows its blocking reason", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending");
+    assert.match(pending.blocked_reason, /shell/);
+    assert.equal(handoff.handoffStatusSegment(lead.id), `handoff blocked: ${pending.blocked_reason}`);
+  });
+
+  it("request background safety keeps unknown work, missing evidence and stale turns blocked", async () => {
+    const lead = seedLead();
+    await prompt();
+    await stop("stop-monitors-running.json");
+    const snapshot = db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id);
+    assert.equal(handoff.requestBackgroundVeto(snapshot), null);
+    const cases = [
+      [{ stop_background: null }, /no background-task evidence/],
+      [{ stop_background: "{" }, /unreadable/],
+      [{ stop_background: "null" }, /unreadable/],
+      [{ stop_prompt_seq: null }, /no completed turn/],
+      [{ prompt_seq: snapshot.prompt_seq + 1 }, /turn started/],
+      [{ snapshot_session_id: "old-session" }, /current session/],
+      ...["shell", "subagent", "telepathy"].map((type) => [
+        { stop_background: JSON.stringify([{ type: "monitor" }, { type }]) }, new RegExp(`still live \\(${type}\\)`),
+      ]),
+    ];
+    for (const [patch, reason] of cases) assert.match(handoff.requestBackgroundVeto({ ...snapshot, ...patch }), reason);
+  });
+
+  it("handoff keeps the legacy broad socket blocker across lifecycle states", async () => {
+    const lead = seedLead();
+    const at = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString().replace("T", " ").slice(0, 19);
+    const cases = [
+      { name: "current repeating socket", fired_at: at(0), delivery_method: "socket-repeating", socket_attempt_at: at(0), repeat_every_ms: 60_000, blocked: true },
+      { name: "stale repeating socket attempt remains a legacy blocker", fired_at: at(0), delivery_method: "socket-repeating", socket_attempt_at: at(60), repeat_every_ms: 60_000, blocked: true },
+      { name: "typed unconfirmed socket remains a legacy blocker", fired_at: at(0), delivery_method: "socket", socket_attempt_at: at(0), typed_at: at(0), blocked: true },
+      { name: "retained attempt blocks", fired_at: at(6 * 86400), delivery_method: "socket", socket_attempt_at: at(6 * 86400), blocked: true },
+      { name: "expired attempt does not block", fired_at: at(8 * 86400), delivery_method: "socket", socket_attempt_at: at(8 * 86400), blocked: false },
+      { name: "claimed repeating fallback does not match socket prefix", fired_at: at(0), delivery_method: "pty-after-socket-timeout", socket_attempt_at: at(0), repeat_every_ms: 60_000, blocked: false },
+      { name: "dropped fallback does not match socket prefix", fired_at: at(0), delivery_method: "pty-after-socket-timeout", socket_attempt_at: at(0), socket_delivery_note: "dropped", repeat_every_ms: 60_000, blocked: false },
+      { name: "request body is excluded", body: `${handoff.REQUEST_BODY_PREFIX}900`, fired_at: at(0), delivery_method: "socket", socket_attempt_at: at(0), blocked: false },
+    ];
+    for (const testCase of cases) {
+      db.prepare("DELETE FROM wakes").run();
+      db.prepare(
+        `INSERT INTO wakes
+         (project_id, owner, body, kind, deliver_actor, deliver_pane, fired_at, cancelled_at,
+          delivery_method, socket_attempt_at, confirmed_at, typed_at, repeat_every_ms, socket_delivery_note)
+         VALUES (?, 'lead:d', ?, 'delay', 'lead:d', '%9800', ?, NULL, ?, ?, NULL, ?, ?, ?)`,
+      ).run(
+        project,
+        testCase.body ?? "ordinary wake",
+        testCase.fired_at ?? null,
+        testCase.delivery_method ?? null,
+        testCase.socket_attempt_at ?? null,
+        testCase.typed_at ?? null,
+        testCase.repeat_every_ms ?? null,
+        testCase.socket_delivery_note ?? null,
+      );
+      assert.equal(handoff.automationBlocker(lead, null) !== null, testCase.blocked, testCase.name);
+    }
+  });
+
+  it("handoff uses message retention for blockers and held-message counts", async () => {
+    const lead = await armedQuietLead();
+    const padId = db
+      .prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, 'handoff body') RETURNING id")
+      .get(project, handoff.HANDOFF_PAD_NAME).id;
+    try {
+      const row = active(lead.id);
+      db.prepare("UPDATE lead_handoffs SET state = 'started', successor_pane_pid = ?, pad_id = ? WHERE id = ?")
+        .run(lead.pane_pid, padId, row.id);
+      const worker = seedWorker();
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'expired claimed', 'fallback-claimed', datetime('now', '-8 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      db.prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, fired_at, delivery_method, socket_attempt_at)
+         VALUES (?, 'lead:d', 'expired socket wake', 'delay', 'lead:d', '%9800', datetime('now', '-8 days'), 'socket', datetime('now', '-8 days'))`,
+      ).run(project);
+      assert.equal(handoff.automationBlocker(lead, 120), null, "expired message and wake obligations do not block handoff");
+
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'retained claimed', 'socket-pending', datetime('now', '-6 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      assert.equal(handoff.automationBlocker(lead, 120), "a delivery to the lead is still in flight", "six-day message remains retained");
+      db.prepare("UPDATE agent_messages SET delivery_status = 'complete' WHERE text = 'retained claimed'").run();
+      db.prepare("UPDATE wakes SET socket_attempt_at = datetime('now', '-6 days') WHERE body = 'expired socket wake'").run();
+      assert.equal(handoff.automationBlocker(lead, 120), "a delivery to the lead is still in flight", "six-day socket wake remains retained");
+
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'expired held', 'fallback-pending', datetime('now', '-8 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'retained held', 'fallback-pending', datetime('now', '-6 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      assert.match(handoff.handoffInjection(lead.actor_id), /1 message\(s\)\./);
+    } finally {
+      db.prepare("DELETE FROM pads WHERE id = ?").run(padId);
+    }
+  });
+
+  it("a budget without auto_handoff requests handoff after a known quiet lead turn", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    drive({ warn: 3, stop: 10, auto_handoff: false });
+    assert.equal(active(lead.id), null, "explicit false keeps the lead in this session");
+
+    drive({ warn: 3, stop: 10 });
+    let row = active(lead.id);
+    assert.equal(row.state, "pending", "armed at warn while the lead is still working");
+    assert.equal(wake(row.request_wake_id).due_at, null);
+
+    await stop();
+    drive();
+    assert.equal(active(lead.id).state, "pending", "a human prompt in the last 5 minutes keeps it waiting");
+
+    quietHuman();
+    const other = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at)
+         VALUES (?, 'lead:d', 'worker finished', 'delay', 'lead:d', '%9800', datetime('now'), datetime('now')) RETURNING id`,
+      )
+      .get(project).id;
+    drive();
+    assert.equal(active(lead.id).state, "pending", "an automated delivery in the last 120 s keeps it waiting");
+
+    db.prepare("UPDATE wakes SET fired_at = datetime('now', '-10 minutes'), due_at = datetime('now', '-10 minutes') WHERE id = ?").run(other);
+    const worker = seedWorker();
+    db.prepare(
+      `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+       VALUES (?, ?, 'w', ?, 'hi', 'socket-pending', datetime('now', '-10 minutes'))`,
+    ).run(project, worker.actor_id, lead.id);
+    drive();
+    assert.equal(active(lead.id).state, "pending", "a socket post still in flight keeps it waiting");
+
+    db.exec("UPDATE agent_messages SET delivery_status = 'complete'");
+    drive();
+    row = active(lead.id);
+    assert.equal(row.state, "requested");
+    const request = wake(row.request_wake_id);
+    assert.notEqual(request.due_at, null);
+    assert.match(request.body, new RegExp(`^hive lead handoff request #${row.id} \\(pass 1, warn budget, 5 turns\\)`));
+    for (const heading of handoff.HANDOFF_HEADINGS) assert.ok(request.body.includes(heading), heading);
+    assert.match(request.body, new RegExp(`hive lead-handoff --request ${row.id} --pad <pad id> --revision <revision>`));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE body LIKE 'hive lead handoff request #%'").get().n, 1);
+  });
+
+  async function armedQuietLead() {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    drive();
+    await stop();
+    quietHuman();
+    return lead;
+  }
+  const seedWake = (cols, values = []) =>
+    db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane, due_at, fired_at, ${cols})
+         VALUES (?, 'lead:d', 'crew notice', 'lead:d', '%9800', datetime('now'), datetime('now'), ${cols.split(",").map(() => "?").join(",")}) RETURNING id`,
+      )
+      .get(project, ...values).id;
+  const watchWake = () =>
+    db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, watch_scope)
+         VALUES (?, 'lead:d', 'watch', 'idle_any', 'lead:d', '%9800', 'project') RETURNING id`,
+      )
+      .get(project).id;
+
+  const finishNotice = (parent) => {
+    const id = seedWake("kind, parent_wake_id", ["delay", parent]);
+    db.prepare(
+      "INSERT INTO wake_idle_notices (wake_id, agent_id, condition, episode, notice_wake_id) VALUES (?, ?, 'idle', 'e1', ?)",
+    ).run(parent, seedWorker().id, id);
+    return id;
+  };
+
+  it("a standing-watch finish notice inside the quiet window does not hold a warn request", async () => {
+    const lead = await armedQuietLead();
+    const notice = finishNotice(watchWake());
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+
+    db.prepare("UPDATE wakes SET delivery_method = 'socket', confirmed_at = NULL, socket_attempt_at = datetime('now') WHERE id = ?").run(notice);
+    assert.equal(handoff.automationBlocker(lead, 120), "a delivery to the lead is still in flight");
+  });
+
+  it("a standing-watch block notice inside the quiet window still holds a warn request", async () => {
+    const lead = await armedQuietLead();
+    seedWake("kind, parent_wake_id", ["delay", watchWake()]);
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+  });
+
+  it("a one-shot idle watch firing inside the quiet window does not hold a warn request", async () => {
+    const lead = await armedQuietLead();
+    seedWake("kind", ["idle_any"]);
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+  });
+
+  it("a hold notice about a one-shot wake still holds a warn request", async () => {
+    const lead = await armedQuietLead();
+    const parent = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane)
+         VALUES (?, 'lead:d', 'one-shot', 'idle_any', 'lead:d', '%9800') RETURNING id`,
+      )
+      .get(project).id;
+    seedWake("kind, parent_wake_id", ["delay", parent]);
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+  });
+
+  it("a worker message inside the quiet window still holds a warn request", async () => {
+    const lead = await armedQuietLead();
+    const worker = seedWorker();
+    db.prepare(
+      `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status)
+       VALUES (?, ?, 'w', ?, 'hi', 'complete')`,
+    ).run(project, worker.actor_id, lead.id);
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+  });
+
+  it("stop holds automation and keeps the warn request and human turn", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    drive();
+    const warned = active(lead.id);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false, "a warn pass holds nothing before grace");
+
+    turns(12);
+    drive();
+    const stopped = active(lead.id);
+    assert.equal(stopped.id, warned.id);
+    assert.equal(stopped.reason, "stop");
+    assert.equal(stopped.state, "wind_down");
+    assert.equal(stopped.request_wake_id, warned.request_wake_id);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+
+    const ordinary = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+         VALUES (?, 'agent:w', 'finish notice', 'delay', 'lead:d', '%9800', datetime('now', '-2 hours')) RETURNING id`,
+      )
+      .get(project).id;
+    await tick(null);
+    const held = wake(ordinary);
+    assert.equal(held.fired_at, null);
+    assert.equal(held.cancelled_at, null, "held, never aged out or cancelled for the handoff");
+    assert.equal(held.held_reason, handoff.HELD_REASON_HANDOFF);
+
+    const before = db.prepare("SELECT human_prompt_seq FROM lead_turn_state").get().human_prompt_seq;
+    await prompt();
+    const after = db.prepare("SELECT human_prompt_seq, state FROM lead_turn_state").get();
+    assert.equal(after.human_prompt_seq, before + 1);
+    assert.equal(after.state, "working", "a human prompt still starts a turn at stop");
+    assert.equal(active(lead.id).id, warned.id);
+  });
+
+  it("a pass without a quiet moment escalates, live background work never does, and a stop hold releases at 15 minutes", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    drive();
+    const row = active(lead.id);
+    db.prepare("UPDATE lead_handoffs SET pass_started_at = datetime('now', '-11 minutes') WHERE id = ?").run(row.id);
+    drive();
+    assert.equal(handoff.readHandoff(row.id).pass, 2);
+
+    await stop();
+    drive();
+    const second = handoff.readHandoff(row.id);
+    assert.equal(second.state, "requested", "from pass 2 the request goes at the next ordinary idle, human prompt or not");
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true, "pass 2 holds from the request on");
+
+    db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes;");
+    turns(12);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const blocked = active(lead.id);
+    assert.equal(blocked.state, "wind_down");
+    db.prepare("UPDATE lead_handoffs SET pass_started_at = datetime('now', '-11 minutes') WHERE id = ?").run(blocked.id);
+    drive();
+    assert.equal(handoff.readHandoff(blocked.id).pass, 1, "live background work never escalates");
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+    db.prepare("UPDATE lead_handoffs SET hold_since = datetime('now', '-16 minutes') WHERE id = ?").run(blocked.id);
+    drive();
+    const released = handoff.readHandoff(blocked.id);
+    assert.notEqual(released.hold_released_at, null);
+    assert.match(released.blocked_reason, /shell/);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
+    assert.equal(released.state, "wind_down", "the epoch stays armed; only the hold is released");
+  });
+
+  it("a stop hold blocked by a working lead releases after 15 minutes across pass escalations", async () => {
+    const lead = seedLead();
+    turns(12);
+    await prompt();
+    drive();
+    const row = active(lead.id);
+    assert.equal(row.state, "wind_down");
+    db.prepare("UPDATE lead_handoffs SET hold_since = datetime('now', '-16 minutes'), pass_started_at = datetime('now', '-11 minutes') WHERE id = ?").run(row.id);
+    drive();
+    assert.equal(handoff.readHandoff(row.id).pass, 2);
+    drive();
+    const released = handoff.readHandoff(row.id);
+    assert.notEqual(released.hold_released_at, null);
+    assert.match(released.blocked_reason, /turn has not ended/);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
+  });
+
+  it("postponed handoff requests a fresh attempt wake at its next quiet moment", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop();
+    quietHuman();
+    drive();
+    const first = active(lead.id);
+    assert.equal(first.state, "requested");
+    db.prepare("UPDATE wakes SET fired_at = datetime('now', '-10 minutes') WHERE id = ?").run(first.request_wake_id);
+    handoff.casHandoff(first.id, ["requested"], { state: "postponed", pass: 2 });
+    drive();
+    const second = active(lead.id);
+    assert.equal(second.state, "requested");
+    assert.notEqual(second.request_wake_id, first.request_wake_id);
+    assert.match(wake(second.request_wake_id).body, /\(pass 2,/);
+  });
+
+  it("failing the epoch on a session change releases the hold without a re-request", async () => {
+    const lead = seedLead();
+    turns(12);
+    await prompt();
+    drive();
+    const row = active(lead.id);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+    db.prepare("UPDATE agents SET pane_pid = '5151' WHERE id = ?").run(lead.id);
+    drive();
+    assert.equal(handoff.readHandoff(row.id).state, "failed");
+    assert.match(handoff.readHandoff(row.id).failure, /pane or session changed/);
+    assert.equal(handoff.readHandoffGate(lead.id), null);
+    assert.notEqual(wake(row.request_wake_id).cancelled_at, null);
+  });
+
+  it("a held lead gets no socket post even with a registered messaging socket", needsTmux, async () => {
+    const sink = sinkPane();
+    const lead = seedLead({ pane: sink.pane, pid: sink.pid });
+    const worker = seedWorker();
+    const sockPath = join(mkdtempSync(join("/tmp", "lahs-")), "s.sock");
+    const received = [];
+    const server = createServer((conn) => {
+      let buf = "";
+      conn.on("data", (c) => (buf += c));
+      conn.on("end", () => received.push(buf));
+    });
+    await new Promise((resolve) => server.listen(sockPath, resolve));
+    try {
+      db.prepare("UPDATE agents SET claude_messaging_socket = ?, claude_messaging_pane_pid = ? WHERE id = ?").run(sockPath, sink.pid, lead.id);
+      turns(12);
+      await prompt();
+      drive();
+      assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+      const receipt = await sendQuietLeadMessage({
+        projectId: project, fromActor: worker.actor_id, target: db.prepare("SELECT * FROM agents WHERE id = ?").get(lead.id),
+        text: "not over the socket", submit: true,
+      });
+      assert.equal(receipt.sent, false);
+      assert.equal(await untilOrTimeout(() => received.length > 0, 1500), false, "nothing reached the socket");
+      assert.equal(readFileSync(sink.sink, "utf8"), "");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("held wakes and messages reach the handed-off successor once and never the predecessor", needsTmux, async () => {
+    const sink = sinkPane();
+    const lead = seedLead({ pane: sink.pane, pid: sink.pid });
+    const worker = seedWorker();
+    turns(12);
+    await prompt();
+    drive();
+    const row = active(lead.id);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+    db.exec("UPDATE agent_state_log SET created_at = datetime('now', '-10 minutes')");
+
+    const receipt = await sendQuietLeadMessage({
+      projectId: project, fromActor: worker.actor_id, target: db.prepare("SELECT * FROM agents WHERE id = ?").get(lead.id),
+      text: "held for the successor", submit: true,
+    });
+    assert.equal(receipt.sent, false);
+    assert.equal(receipt.pending, true);
+    assert.match(receipt.note, /handing off/);
+    const notice = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+         VALUES (?, 'agent:w', 'crew notice', 'delay', 'lead:d', ?, datetime('now')) RETURNING id`,
+      )
+      .get(project, sink.pane).id;
+    await tick();
+    await retryQuietLeadMessages(null);
+    assert.equal(readFileSync(sink.sink, "utf8"), "", "nothing typed into the predecessor during the hold");
+    assert.equal(wake(notice).fired_at, null);
+    assert.equal(wake(notice).held_reason, handoff.HELD_REASON_HANDOFF);
+
+    const successorSink = join(tmp, "successor.sink");
+    writeFileSync(successorSink, "");
+    execFileSync("tmux", ["respawn-pane", "-k", "-t", sink.pane, `cat > '${successorSink}'`], { stdio: "ignore" });
+    const pid = execFileSync("tmux", ["display-message", "-p", "-t", sink.pane, "#{pane_pid}"], { encoding: "utf8" }).trim();
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(pid, lead.id);
+    handoff.casHandoff(row.id, ["wind_down"], { state: "completed", successor_pane_pid: pid });
+
+    for (let i = 0; i < 3; i++) {
+      await tick();
+      await retryQuietLeadMessages(null);
+    }
+    assert.ok(await until(() => readFileSync(successorSink, "utf8").includes("crew notice"), 3000));
+    const typed = readFileSync(successorSink, "utf8");
+    assert.equal(typed.split("held for the successor").length - 1, 1);
+    assert.equal(typed.split("crew notice").length - 1, 1);
+    assert.equal(db.prepare("SELECT delivery_status FROM agent_messages").get().delivery_status, "complete");
+  });
+});

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, makeFakeClaude, McpClient, REPO, scratchDirs, until } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, makeFakeClaude, McpClient, REPO, scratchDirs, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead-message shortening tests");
 const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
@@ -40,6 +40,7 @@ before(async () => {
   mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
   await mcp.start();
   ({ db } = await import("../dist/db.js"));
+  await assertScratchStore();
 });
 
 after(async () => {
@@ -289,6 +290,48 @@ describe("todo 475: a pointer outlives its message, so a lookup that misses says
       0,
       "without this, the pruned branch above is testing a state the janitor never actually produces",
     );
+  });
+});
+
+describe("todo 1767: delivery metadata is readable on a delivery row and absent on a historical pointer", () => {
+  it("quiet short message metadata reads back unchanged after a scheduler tick, because the fixture names no agent the sweep can act on", NEEDS_TMUX, async () => {
+    const projectId = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs.projectDir)?.id;
+    assert.ok(projectId, "the MCP server registered this project");
+    const text = "short report\nwith a second line";
+    const identity = JSON.stringify({ tmux_target: "%9", tmux_socket: "/tmp/s", pane_pid: "42" });
+    const { id } = db
+      .prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status,
+           delivery_method, socket_attempt_at, delivery_note, target_identity, sender_tag)
+         VALUES (?, 'agent:q', 'quiet', 999999, ?, 'socket-pending', 'socket', '2026-10-08 01:02:03.456', NULL, ?,
+           '[hive:worker quiet] ') RETURNING id`,
+      )
+      .get(projectId, text, identity);
+
+    const { tick } = await import("../dist/scheduler.js");
+    await tick(null);
+    const got = await mcp.call("agent_message_get", { message_id: id });
+    assert.equal(got.text, text);
+    assert.equal(got.chars, text.length);
+    assert.equal(got.delivery_status, "socket-pending");
+    assert.equal(got.delivery_method, "socket");
+    assert.equal(got.socket_attempt_at, "2026-10-08 01:02:03.456");
+    assert.equal(got.confirmed_at, null);
+    assert.equal(got.fallback_claimed_at, null);
+    assert.equal(got.typed_at, null);
+    assert.equal(got.delivery_note, null);
+    assert.equal(got.target_identity, identity);
+    assert.equal(got.sender_tag, "[hive:worker quiet] ");
+    db.prepare("DELETE FROM agent_messages WHERE id = ?").run(id);
+  });
+
+  it("historical pointer row has no delivery metadata in the tool result", NEEDS_TMUX, async () => {
+    const name = "t1767-historic";
+    await spawnLead(name);
+    const receipt = await mcp.call("agent_send", { name, text: bodyOf(900) });
+    const got = await mcp.call("agent_message_get", { message_id: receipt.message_id });
+    assert.deepEqual(Object.keys(got).sort(), ["chars", "created_at", "from", "from_actor", "message_id", "text", "to_agent_id"]);
+    assert.equal(db.prepare("SELECT delivery_status FROM agent_messages WHERE id = ?").get(receipt.message_id).delivery_status, null);
   });
 });
 

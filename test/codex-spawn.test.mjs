@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
+import { startMcpClient } from "./mcp-client.mjs";
 import { fakeFailingTmux, isolateTmux, liveAgentRow, McpClient, scratchDirs, scratchGit, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the codex spawn integration tests");
@@ -124,43 +124,17 @@ describe("agent_spawn: codex worker gets a real per-worker CODEX_HOME", () => {
 // table. The pane's environment is deliberately NOT passed, which is the property under test.
 const asCodexLaunchesIt = (configPath, cwd) => {
   const { command, args, env } = parseToml(readFileSync(configPath, "utf8")).mcp_servers.hive;
-  const child = spawn(command, args, {
+  const client = startMcpClient(command, args, {
     cwd,
     env: { PATH: process.env.PATH, HOME: fakeHome, ...env },
-    stdio: ["pipe", "pipe", "inherit"],
+    clientInfo: { name: "codex", version: "0" },
   });
-  const pending = new Map();
-  let buffer = "";
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk;
-    for (let nl = buffer.indexOf("\n"); nl >= 0; nl = buffer.indexOf("\n")) {
-      const line = buffer.slice(0, nl);
-      buffer = buffer.slice(nl + 1);
-      if (!line.trim()) continue;
-      const msg = JSON.parse(line);
-      pending.get(msg.id)?.(msg);
-    }
-  });
-  let nextId = 1;
-  const request = (method, params) =>
-    new Promise((resolve, reject) => {
-      const id = nextId++;
-      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), 15000);
-      pending.set(id, (msg) => {
-        clearTimeout(timer);
-        resolve(msg);
-      });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    });
   return {
     async whoami() {
-      await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "0" } });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
-      const msg = await request("tools/call", { name: "whoami", arguments: {} });
-      return JSON.parse(msg.result.content[0].text);
+      await client.start();
+      return client.call("whoami");
     },
-    close: () => child.kill(),
+    close: () => client.close(),
   };
 };
 

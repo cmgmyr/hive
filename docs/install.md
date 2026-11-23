@@ -69,13 +69,13 @@ For MCP registration, replace `$(npm root -g)/@cmgmyr/hive/dist/index.js` with `
 
 ## Node version and the interpreter pin
 
-tmux is only needed for the agent tools; everything else runs without it.
+tmux is required for the lead and every worker, because hive runs each agent in a tmux pane. Without it, only the store tools (pads, todos, kv) work.
 
 The required Node range, `^22.14.0 || >=23.6.0`, is `better-sqlite3`'s, not hive's own code's. It is two ranges rather than one floor because a Node-API level starts once per release line: the addon needs Node-API 10, which begins at 22.14.0 on the 22 line and 23.6.0 on the 23 line. Node 23.0.0 through 23.5.0 satisfy a plain "22.14 or newer" and only provide Node-API 9, so they cannot load the addon.
 
-`hive setup` and the `claude mcp add` line both register an absolute interpreter for the same reason: hive must not let the working directory pick its own. The addon is N-API, so it loads under any Node in the range above, but a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory, and a directory can pin one below that range. Under such a Node the addon does not report an error; it kills the process inside `dlopen`, with no stack trace and no output at all. Pinning is what stops a `cd` from doing that.
+`hive setup` and the `claude mcp add` line both register an absolute interpreter for the same reason: hive must not let the working directory pick its own. The addon is N-API, so it loads under any Node in the range above, but a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory, and a directory can pin one below that range. Under such a Node hive prints `this Node is too old for better-sqlite3's native addon`, names the Node-API level the addon needs and the level your Node provides, and exits. Pinning is what stops a `cd` from doing that. If you cannot pin an absolute path, see [Managed MCP configurations](#managed-mcp-configurations).
 
-Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node and `better-sqlite3` refuses to load with `ERR_DLOPEN_FAILED`. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then re-add it with the new `$(command -v node)`.
+Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node, and the server exits with the too-old message above. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then re-add it with the new `$(command -v node)`.
 
 `hive setup` writes a dispatcher to `~/.local/bin/hive`, and refuses to point it at a build inside a linked git worktree, since worktrees are disposable and the shim breaks the moment its target is torn down (`--force` overrides). Put that ahead of any version manager's shims in your shell profile:
 
@@ -96,10 +96,12 @@ Both leads and workers can run `codex`. Set `lead: codex` for the lead and confi
 
 A codex worker supports most of the same lifecycle and reporting features, with a few limits:
 
-- You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1093`; `agent_resume`, `src/tools/agents.ts:920`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:645`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:973`).
-- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2833`; `noteStalledCrew`, `src/scheduler.ts:1961`; `transcriptStaleness`, `src/scheduler.ts:1879`).
-- Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:108-133`; `contextFillField`, `src/tools/agents.ts:551-553`).
-- Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:309`).
+- `agent_fork` can copy a running or parked Codex session into a new worker. It creates a separate home and copies only the source's completed rollout prefix into it; it never shares the writable home. A closed Codex worker cannot be forked after `agent_close` reaps its home. Keep the source parked if you may want to fork it later (`seedCodexFork`, `src/codexHome.ts:95`; `agent_fork`, `src/tools/agents.ts:919`).
+- You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1215`; `agent_resume`, `src/tools/agents.ts:1176`). After a confirmed unexpected pane loss, `hive crew-restore [--dry-run] [--json]` can resume pending workers on their existing rows. A crashed Codex home is retained for seven days from the detected loss, then the janitor reaps it; a deliberate `agent_close` still releases it immediately, and park keeps it (`reapCodexHomeForClosedAgent`, `src/spawn.ts:670`; `reapCodexHome`, `src/codexHome.ts:231`; `resumeWorker`, `src/agentResume.ts:166`). Restart all hive servers after upgrading to get this retention.
+- When a Codex worker hits its usage limit, hive waits for the locally recorded reset. After the reset, it types one `continue` only if the worker has received an assignment and its owned pane still shows the limit (`continueLimitedCodexWorkers`, `src/usageLimit.ts:338`). Codex limit fields are version-sensitive local protocol data. No usage endpoint is queried, and no live limit has been used to confirm the snapshot values.
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2999`; `noteStalledCrew`, `src/scheduler.ts:2094`; `transcriptStaleness`, `src/scheduler.ts:2005`).
+- Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:112-137`; `contextFillField`, `src/tools/agents.ts:527-530`).
+- Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:419`).
 
 `agents:` is accident prevention, not a security boundary: the gate matches on the command's basename, so it stops an ordinary spawn, not someone deliberately working around it. See [docs/projects.md](projects.md#project-commands-hiveyml).
 
@@ -144,13 +146,15 @@ The `--codex` argument selects Codex-compatible output. Review and trust this us
 
 The first time a worker spawns with nobody attached, macOS asks permission for hive to control iTerm; approve it once. This applies under either attach mode: `raw` still opens iTerm, just without control mode.
 
-With the default `auto` attach mode (or `control`), set these once per machine under Settings > General > tmux:
+With the default `auto` attach mode (or `control`), turn all of these on once per machine under Settings > General > tmux:
 
-- Check "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
-- Set "When attaching, restore windows as" to "Native tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window. ("Native tabs in a new window" also works if you prefer the session in its own window.)
-- Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server, not the display.
+![iTerm Settings > General > tmux with every box checked: open tmux windows as tabs in the attaching window, automatically bury the tmux client session, use the tmux profile, status bar shows tmux status bar content, warn before pausing, unpause automatically, and mirror the tmux paste buffer to the local clipboard](assets/iterm-tmux-settings.png)
 
-None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
+- "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
+- "Open tmux windows as tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window.
+- "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with quiet messaging on, the default, the lead's own socket), not the display.
+
+None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"open as tabs" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 
 ## Claude status line
 
@@ -189,6 +193,33 @@ The status line only re-renders on session activity by default. Add `"refreshInt
 
 Register hive in one scope only. A project-scoped registration shadows the user-scoped one, and `claude mcp list` is the way to catch it: two entries named hive means the project one is what your session is actually running.
 
+## Managed MCP configurations
+
+A managed or shared MCP configuration (for example one pushed by MDM) needs one launch command that is identical on every machine and holds no absolute path. Use this entry:
+
+```json
+["npx", "-y", "--package=node@<node-version>", "--package=@cmgmyr/hive@<hive-version>", "hive-mcp"]
+```
+
+For example, `["npx", "-y", "--package=node@24.22.1", "--package=@cmgmyr/hive@1.12.1", "hive-mcp"]`. Pick a Node inside the supported range, `^22.14.0 || >=23.6.0`, and pin both versions exactly. Within the Node major you pick, pin its newest patch release, and re-check it when you bump hive. The npm `node` package can lag Node's own releases by a few days, so a fresh security release may not be installable through npx yet.
+
+The `hive-mcp` bin starts with `#!/usr/bin/env node`, so the server runs on the first `node` on PATH, not on the Node that ran `npx`. A bare `npx -y --package=@cmgmyr/hive@<hive-version> hive-mcp` therefore fails in any folder whose version manager pins a Node below the range. The extra `node` package fixes that: `npx` puts its `node` binary first on the PATH of the child process, so the server runs on that Node whatever the folder pins.
+
+Under `npx`, npm exec prepends its own directories to `PATH` for the server process. Worker panes the server spawns start without that prefix, so a worker's shell sees the `PATH` your terminal gave tmux plus whatever its own startup files add (`paneEnvPath`, `src/tmux.ts`). npm exec also exports its settings to the server as `npm_*` variables, plus `INIT_CWD` and `NODE`. When the server is the process that starts the tmux server, hive leaves those out of the environment it hands tmux, so a worker's own `npm` and `npx` read your config instead of the server's (`tmuxWithClientPath`, `src/tmux.ts`). Nothing changes for a server launched any other way.
+
+An absolute path to `npx`, such as `/opt/homebrew/bin/npx`, does not help. The shebang still picks `node` from PATH, and the path differs between Apple Silicon and Intel Homebrew and does not exist without Homebrew Node.
+
+Limits to know about:
+
+- `npx` must be on the PATH your client passes to the server. If a folder pins a Node that is not installed, an asdf or mise shim fails before `npx` runs.
+- With npm `ignore-scripts=true`, the `node` package installs no binary. The server then falls back to the PATH `node` and the failure above returns. The `node` package is an extra package that downloads Node through an install script.
+- npm 11 refuses to run `npx` in a folder whose `package.json` names another package manager under `devEngines.packageManager`, for example pnpm. It fails with `EBADDEVENGINES` before hive starts. Add `npm_config_force=true` to the server's environment, for example `claude mcp add --env npm_config_force=true ...`; npm then prints a warning and continues. An environment variable leaves the command and its arguments unchanged, so an allowlist that matches only those still accepts the entry. Adding `--prefix=/` to the arguments also works, but it changes the entry and stops npx from reading that folder's `.npmrc`.
+- The first launch downloads Node and hive into the npx cache. Later launches reuse the cache, and the addon is a Node-API build, so a cache entry installed under one Node runs under another Node in range.
+
+To bump, change both strings together, because both pins are exact.
+
+`hive upgrade` refuses an npx cache install. If you also want the `hive` CLI, install it separately at the same version with `npm install -g @cmgmyr/hive@<hive-version>`.
+
 ## Updating
 
 ### Global npm install
@@ -202,6 +233,8 @@ hive doctor --strict
 ```
 
 An already-current install exits successfully without installing or re-pinning. If npm cannot report a version, upgrade exits with an unknown result and installs nothing. `HIVE_NO_UPDATE_CHECK=1` also prevents the registry query and upgrade. The npm on your PATH must own the running package's global root. If a version manager switched that root, put the npm for this install first on PATH before retrying. Copied installs and npx caches are refused.
+
+Restart every hive MCP server after upgrading before using `lease_acquire` with `wait: true`. Older servers do not read the waiter queue, so mixed builds cannot preserve FIFO ordering.
 
 ### From source
 
@@ -230,7 +263,7 @@ Setup and doctor report interpreter and server-path drift for registrations hive
 
 If npm fails, the package may be partially changed. Follow the printed install retry and explicit setup command. If setup fails after npm succeeds, the package is new but the dispatcher has not been confirmed re-pinned. Run the printed command naming the absolute interpreter and new `dist/cli.js`, then `hive doctor --strict`. Checkout failures name the failed step and list the remaining steps as not run. Repair that step before continuing.
 
-**Restart every Claude Code or Codex session that has hive loaded after upgrading or completing a repair.** Existing sessions keep running old in-memory code even after the files change.
+**Restart every Claude Code or Codex session that has hive loaded after upgrading or completing a repair.** Existing sessions keep running old in-memory code even after the files change, and each one keeps running its own scheduler; [Quiet messaging](projects.md#quiet-messaging) says what an old scheduler does to a repeating wake.
 
 `npm install` deciding a package is up to date is not proof the addon file is still there, and this is measured rather than assumed: delete `node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node`, run a plain `npm install`, and it prints `up to date` without restoring it. The repair is to make npm reinstall the package rather than re-examine it:
 
@@ -252,16 +285,18 @@ The new code reaches each entry point at a different time:
 
 When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, so your lead command and vars stay yours) and uncomment its `watch: npm run watch` process. That auto-starts the compiler with the session and replaces the manual build step. The restart rules for running sessions still apply.
 
+For project-specific command trust and the optional todo completion gate, see [project commands](projects.md#project-commands-hiveyml).
+
 ## Uninstall
 
 For Codex, run `codex mcp remove hive`. Remove only the Hive skill symlinks you created under `~/.agents/skills`, and remove only Hive's `SessionStart` entry from user `hooks.json`, preserving other hooks. Skip the Claude-specific registration and symlink commands below if you did not use them. After upgrades, verify ordinary Codex registration with `codex mcp get hive`; Hive-managed sessions regenerate their configuration when launched.
 
 
-Hive touches six things on a machine; remove them in any order:
+Hive touches seven things on a machine; remove them in any order:
 
 ```bash
 hive status                     # confirm the session name, then end it:
-tmux kill-session -t =hive-main # every project's windows live in this one session
+tmux kill-session -t '=hive-main' # every project's windows live in this one session
 tmux ls | grep view- || true    # a second terminal's attach opens its own VIEW
                                  # session grouped with hive-main; kill those
                                  # too (or just close their terminals - a view
@@ -274,6 +309,6 @@ rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made 
 rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
 ```
 
-One session holds every project, so this is one `kill-session`, not one per project, but only when nothing else is attached. A window belongs to every session it is grouped with, not only to `hive-main`, so `kill-session -t =hive-main` does not tear the windows down while a VIEW session (opened by any other terminal's `hive attach`, `hive lead`, or `hive <project>`) is still holding them; the windows simply keep living under that view until it too is killed or its last client detaches. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
+One session holds every project, so this is one `kill-session`, not one per project, but only when nothing else is attached. A window belongs to every session it is grouped with, not only to `hive-main`, so `kill-session -t '=hive-main'` does not tear the windows down while a VIEW session (opened by any other terminal's `hive attach`, `hive lead`, or `hive <project>`) is still holding them; the windows simply keep living under that view until it too is killed or its last client detaches. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
 
 Then revoke the automation permission under System Settings > Privacy & Security > Automation (the entry allowing your terminal to control iTerm), and delete the checkout.

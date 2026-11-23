@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, crashPane, isolateTmux, runCli, scratchDirs, seedTrustedYml, tmux, until } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, crashPane, isolateTmux, runCli, scratchDirs, seedTrustedYml, tmux, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the dead-process notice tests");
 
@@ -10,6 +10,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { createWindow, ensureSession, findProjectWindow, sessionName, targetLive } = await import("../dist/tmux.js");
 const { janitor } = await import("../dist/scheduler.js");
 
@@ -189,5 +190,19 @@ describe("a dead-process notice is filed only for a lead whose pane the lead row
     db.prepare("UPDATE agents SET pane_pid = ? WHERE kind = 'lead'").run(leadPid);
     await crashApi();
     assert.equal(noticeBodies().length, before + 1, "control: the same death reaches a lead that owns its pane");
+  });
+
+  it("does not mint a dead-process notice for a live but unclassifiable lead pane", needsTmux, async () => {
+    const { screenClassifiable } = await import("../dist/harnesses.js");
+    assert.equal(screenClassifiable("sleep 600"), false);
+    db.prepare("UPDATE agents SET command = 'sleep 600' WHERE kind = 'lead'").run();
+    const before = noticeBodies().length;
+    await crashApi();
+
+    assert.equal(noticeBodies().length, before, "a pane hive cannot classify must not receive a notice");
+
+    db.prepare("UPDATE agents SET command = 'claude' WHERE kind = 'lead'").run();
+    await crashApi();
+    assert.equal(noticeBodies().length, before + 1, "a classifiable lead still receives the report");
   });
 });

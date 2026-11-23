@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
-import { DIST, isolateTmux, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
+import { DIST, McpClient, isolateTmux, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
 
 const { cleanup } = isolateTmux("the version tests");
 after(() => cleanup());
@@ -47,6 +47,23 @@ describe("hive --version reports the build-time stamp `npm run build` wrote to d
   });
 });
 
+describe("MCP initialize reports the package version in serverInfo", () => {
+  it("reports the same version as the running package", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    try {
+      const init = await mcp.request("initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "hive-test", version: "0" },
+      });
+      assert.equal(init.result.serverInfo.name, "hive");
+      assert.equal(init.result.serverInfo.version, JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version);
+    } finally {
+      await mcp.close();
+    }
+  });
+});
+
 // Ignore dist/build-info.json and the runFixture .mjs script the tests write after this commit,
 // or those untracked files make the scratch tree read as dirty regardless of what's under test.
 function initGitRepo(dir, ignore = ["dist/", "*.mjs"]) {
@@ -66,6 +83,7 @@ function scratchVersionModule(tmp) {
   const scratch = mkdtempSync(join(tmp, "version-fixture-"));
   mkdirSync(join(scratch, "dist"), { recursive: true });
   cpSync(join(DIST, "version.js"), join(scratch, "dist", "version.js"));
+  cpSync(join(DIST, "git.js"), join(scratch, "dist", "git.js"));
   writeFileSync(join(scratch, "package.json"), JSON.stringify({ version: "9.9.9" }));
   return scratch;
 }
@@ -123,6 +141,25 @@ describe("versionInfo() (src/version.ts): stamp plus a runtime drift check again
     const info = runFixture(scratch, "call", CALL_VERSION_INFO);
     assert.notEqual(freshSha, staleSha, "test needs a real second commit to exercise this path");
     assert.equal(info.line, `hive 9.9.9 (${staleSha})`);
+    assert.equal(info.drift, `checkout has moved since this build: now ${freshSha}`);
+  });
+
+  it("ignores ambient GIT_DIR when reading the checkout sha and status", () => {
+    const scratch = scratchVersionModule(dirs.tmp);
+    const staleSha = initGitRepo(scratch);
+    writeFileSync(join(scratch, "dist", "build-info.json"), JSON.stringify({ version: "9.9.9", sha: staleSha, dirty: false }));
+    execFileSync(
+      "git",
+      ["-c", "commit.gpgsign=false", "-c", "user.email=test@test", "-c", "user.name=test", "commit", "--allow-empty", "-q", "-m", "second"],
+      { cwd: scratch },
+    );
+    const freshSha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: scratch, encoding: "utf8" }).trim();
+    const stranger = scratchVersionModule(dirs.tmp);
+    const strangerSha = initGitRepo(stranger);
+
+    const info = runFixture(scratch, "call", CALL_VERSION_INFO, { GIT_DIR: join(stranger, ".git") });
+
+    assert.notEqual(freshSha, strangerSha, "test needs distinct repositories to detect the ambient override");
     assert.equal(info.drift, `checkout has moved since this build: now ${freshSha}`);
   });
 

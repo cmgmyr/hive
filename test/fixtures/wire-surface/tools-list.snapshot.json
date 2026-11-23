@@ -116,7 +116,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
+    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A process-stopping close releases the worker's leases; row_only=true leaves its leases in place because it does not stop the pane. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -177,6 +177,12 @@
         "parked": {
           "type": "boolean"
         },
+        "released_leases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "row_only": {
           "type": "boolean"
         }
@@ -185,6 +191,150 @@
         "agent_id",
         "name",
         "closed"
+      ],
+      "type": "object"
+    }
+  },
+  "agent_fork": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Fork a same-project Claude Code or Codex worker into a new worker with a new identity and pane. The child starts from a copy of the source conversation, gets a fresh brief, and does not inherit the source todo. Claude Code process-scoped permission grants are not copied and may need approval again.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric id of the same-project worker to fork.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "cwd": {
+          "description": "Child working directory; defaults to the source worker's directory.",
+          "type": "string"
+        },
+        "effort": {
+          "description": "Reasoning effort override; defaults to the source worker's effort.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        "layout": {
+          "enum": [
+            "tiled",
+            "main-vertical",
+            "main-horizontal",
+            "even-horizontal",
+            "even-vertical"
+          ],
+          "type": "string"
+        },
+        "model": {
+          "description": "Model override; defaults to the source worker's model.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "Required name for the new child worker.",
+          "type": "string"
+        },
+        "placement": {
+          "enum": [
+            "split",
+            "window"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "Read-only mode override; defaults to the source worker's mode.",
+          "type": "boolean"
+        },
+        "todo_id": {
+          "description": "Explicit todo for this new child; absent means no todo link.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "forked_from_agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "forked_from_session_id": {
+          "type": "string"
+        },
+        "hive_notice": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "permission_note": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "tail": {
+          "type": "string"
+        },
+        "tmux_target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "actor_id",
+        "name",
+        "tmux_target",
+        "forked_from_agent_id",
+        "forked_from_session_id",
+        "session_id",
+        "ready",
+        "permission_note"
       ],
       "type": "object"
     }
@@ -236,7 +386,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
+    "description": "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here when it shortens one (text over 300 characters sent to a lead by someone who is not that lead) and, with quiet_messaging on, for every submitted worker send to a Claude lead, whose result then also carries its delivery state (delivery_status, delivery_method, socket_attempt_at, confirmed_at, fallback_claimed_at, typed_at, delivery_note and the accepted target). Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -309,7 +459,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+    "description": "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, release any leases the worker holds, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -371,6 +521,12 @@
         },
         "parked_branch": {
           "type": "string"
+        },
+        "released_leases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "session_id": {
           "type": "string"
@@ -487,7 +643,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+    "description": "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. A same-project worker or lead on that harness's active usage limit makes this resume retryable until its reset or bounded deadline; hive does not queue resumes. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -578,7 +734,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
+    "description": "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. A submitted text send to a target on its current usage limit is stored and held in its message row until release; its receipt says pending, so do not resend it. keys and submit=false remain manual recovery paths. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. With quiet_messaging on, a worker's submitted text to a Claude lead is stored with a message id and posted over the lead's messaging socket instead of typed (the same pointer when over 300 characters): the receipt says pending until the lead's prompt confirms it, hive types it into the pane once if no confirmation comes, and the socket post skips the pane checks below; do not resend a pending send. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -632,7 +788,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+    "description": "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. A same-project worker or lead on that harness's active usage limit makes this spawn retryable until its reset or bounded deadline; hive does not queue spawns. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -679,7 +835,7 @@
           "type": "string"
         },
         "placement": {
-          "description": "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode).",
+          "description": "Omit this to use the project's hive.yml placement, else HIVE_SPAWN_PLACEMENT, else split. split: the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode). agent_output reads scrollback, so a crowded window does not limit what a lead can read. If workers end up in other windows, run hive layout to gather them.",
           "enum": [
             "split",
             "window"
@@ -695,6 +851,12 @@
         "read_only": {
           "description": "Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only bare claude/codex executables. Extra args allow codex -c model_reasoning_effort=low|medium|high|xhigh, or claude --effort low|medium|high|xhigh|max; all other arguments are refused.",
           "type": "boolean"
+        },
+        "todo_id": {
+          "description": "The todo this worker is on, recorded as a link (a non-archived todo in the same project). Changes no todo status.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -825,7 +987,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, leases.",
+    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: crew-restore, layout, workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, questions, leases.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1025,7 +1187,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. With wait:true, queue FIFO on a held lease and receive one wake when granted; the requested TTL starts at grant time, and max_wait_seconds defaults to 3600. The caller must have a safe running session that can receive wakes. lease_release cancels your queued wait. The grant wake reports a deadline that may pass before delivery; call lease_acquire again before then to extend it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; row_only retirement leaves them in place because it does not stop the pane. Leases expire on their own.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1037,6 +1199,11 @@
           "description": "Stable and specific, like \"db:dev\".",
           "type": "string"
         },
+        "max_wait_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
         "project_id": {
           "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
           "exclusiveMinimum": 0,
@@ -1047,6 +1214,9 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "wait": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -1077,10 +1247,19 @@
         "key": {
           "type": "string"
         },
+        "position": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
         "project_id": {
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "queued": {
+          "const": true,
+          "type": "boolean"
         }
       },
       "required": [
@@ -1098,7 +1277,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Release a lease you own.",
+    "description": "Release a lease you own, or cancel your queued wait for the key.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1130,6 +1309,10 @@
         },
         "key": {
           "type": "string"
+        },
+        "left_queue": {
+          "const": true,
+          "type": "boolean"
         },
         "project_id": {
           "exclusiveMinimum": 0,
@@ -1657,7 +1840,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. With project_id AND confirm_name (the project's exact name), removes that one project even when it owns rows: it takes a snapshot first, refuses while a running row owns a live pane or its pane ownership cannot be verified (agent_close row_only retires the latter), then deletes the project with everything it owns (todos, comments, pads, kv, leases, agents, wakes, trust, agent messages) in one transaction and reports per-table counts and the snapshot path. queen_audit rows naming it are kept, and so are other projects' lead-idle subscriptions that target it, so a watch on its lead ends with a named reason. confirm_name without project_id is refused, and there is no forced sweep. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
+    "description": "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust, questions), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. With project_id AND confirm_name (the project's exact name), removes that one project even when it owns rows: it takes a snapshot first, refuses while a running row owns a live pane or its pane ownership cannot be verified (agent_close row_only retires the latter), then deletes the project with everything it owns (todos, comments, pads, kv, leases, agents, wakes, trust, questions, agent messages) in one transaction and reports per-table counts and the snapshot path. queen_audit rows naming it are kept, and so are other projects' lead-idle subscriptions that target it, so a watch on its lead ends with a named reason. confirm_name without project_id is refused, and there is no forced sweep. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1804,7 +1987,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "List confirmed queen writes into other projects, newest first. The queen may read all targets; other callers see only their own project. Default 20, maximum 100 entries. History is retained for 30 days with a 20,000 id-range backstop. A crash between a completed terminal send and its audit insert can leave that send unrecorded.",
+    "description": "List confirmed queen writes and refused cross-project guard calls, newest first. Refusal rows include outcome=refused and the problem. The queen may read all targets; other callers see only their own project. Default 20, maximum 100 entries. History is retained for 30 days with a 20,000 id-range backstop. A crash between a completed terminal send and its audit insert can leave that send unrecorded.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1824,6 +2007,350 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    }
+  },
+  "question_answer": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Record the human's answer to a pending or defaulted question in this project, plus optional notes. The answer may be a picked option label or free text, including text outside the offered labels. The answer update comes first; the answer and any wake commit together, and the answer stays readable with `question_get`. Repeating the stored answer succeeds with already_answered: true when notes are absent or match the stored notes; a different answer or notes conflicts. A withdrawn question refuses with `QUESTION_STATE_CONFLICT`. A queued wake carries the question, answer and notes verbatim. When you are the asker, skip with `wake_id: null` and `wake_skipped`; otherwise, queue a wake to the running asker or, if the asker has no running row, to the project's running lead with `wake_rerouted_to`. Skip that fallback with `wake_id: null` and `wake_skipped` if no lead runs or the lead is the answerer. `wake_id` means queued, not delivered.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "question_id",
+        "answer"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "already_answered": {
+          "type": "boolean"
+        },
+        "hive_notice": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "wake_id": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wake_rerouted_to": {
+          "type": "string"
+        },
+        "wake_skipped": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "wake_id"
+      ],
+      "type": "object"
+    }
+  },
+  "question_ask": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Record an open question for the human, keyed to this project and to you as the asker. kind=choice takes 2-4 options (each label, description, recommended; exactly one recommended) and a header of 12 characters or fewer (longer is cut at a word boundary and reported as header_truncated); kind=free_text takes just the question and header. Every question carries default_answer: for a choice it is the recommended option's label. Pass ref (a todo id or PR number) to dedupe: asking again with a ref that already has a PENDING question in this project updates that row instead of adding one. The receipt lists other pending questions in this project that look similar (same normalized text, or at least half their longer words shared), so you can question_update one instead. The record is only stored: put the question to the human yourself, in your own turn. You must be a session an answer can be woken back to. When the question is answered, an ordinary wake carrying the answer is queued to you; read the record with question_get.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "default_answer": {
+          "description": "What you do if unanswered. For a choice, defaults to the recommended label; required for free_text.",
+          "type": "string"
+        },
+        "header": {
+          "description": "12 characters or fewer; longer values are cut at a word boundary and reported as header_truncated.",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "choice",
+            "free_text"
+          ],
+          "type": "string"
+        },
+        "options": {
+          "description": "Required for choice, forbidden for free_text.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "description": "What choosing this means.",
+                "type": "string"
+              },
+              "label": {
+                "description": "Short choice label; distinct within the question.",
+                "type": "string"
+              },
+              "recommended": {
+                "description": "Whether this option is recommended; omitted options default to false.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label",
+              "description"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        },
+        "ref": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "todo",
+                "pr"
+              ],
+              "type": "string"
+            },
+            "number": {
+              "description": "A todo id or PR number. An identifier, not looked up.",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "number"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "question",
+        "header"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "created": {
+          "type": "boolean"
+        },
+        "header_truncated": {
+          "type": "string"
+        },
+        "hive_notice": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "similar_question_ids": {
+          "items": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "question_id",
+        "created",
+        "similar_question_ids"
+      ],
+      "type": "object"
+    }
+  },
+  "question_get": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read one question in this project by id, in any state, with its answer and notes once answered.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "question_id"
+      ],
+      "type": "object"
+    }
+  },
+  "question_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "List this project's pending questions, then its defaulted ones (acted on by default, still open to reversal), oldest first within each group. Answered and withdrawn questions are not listed; read one by id with question_get.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "question_update": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Edit a pending question's text (question, header, options, default_answer; the whole result is revalidated) or move it out of pending with state=defaulted (you acted on your default) or state=withdrawn (moot). A defaulted question can still be withdrawn. Moving state needs the asking session or the human; an answered or withdrawn question cannot be changed. The ref, asker and wake target never change.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "default_answer": {
+          "type": "string"
+        },
+        "header": {
+          "description": "12 characters or fewer; longer values are cut at a word boundary and reported as header_truncated.",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "description": "What choosing this means.",
+                "type": "string"
+              },
+              "label": {
+                "description": "Short choice label; distinct within the question.",
+                "type": "string"
+              },
+              "recommended": {
+                "description": "Whether this option is recommended; omitted options default to false.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label",
+              "description"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "defaulted",
+            "withdrawn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "header_truncated": {
+          "type": "string"
+        },
+        "hive_notice": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "answered",
+            "defaulted",
+            "pending",
+            "withdrawn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "state"
+      ],
       "type": "object"
     }
   },
@@ -2144,8 +2671,7 @@
           "type": "integer"
         },
         "slug": {
-          "description": "Short label, ~3-5 words (40 chars max). When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
-          "maxLength": 40,
+          "description": "Short label, ~3-5 words (40 chars max). Longer values are cut at a word boundary and reported as slug_truncated. When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
           "type": "string"
         },
         "tags": {
@@ -2174,6 +2700,9 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "slug_truncated": {
+          "type": "string"
         },
         "todo_id": {
           "exclusiveMinimum": 0,
@@ -2397,8 +2926,7 @@
           "type": "integer"
         },
         "slug": {
-          "description": "Short label, ~3-5 words (40 chars max). When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
-          "maxLength": 40,
+          "description": "Short label, ~3-5 words (40 chars max). Longer values are cut at a word boundary and reported as slug_truncated. When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
           "type": "string"
         },
         "status": {
@@ -2441,6 +2969,9 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "slug_truncated": {
+          "type": "string"
         },
         "todo_id": {
           "exclusiveMinimum": 0,
@@ -2523,7 +3054,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates body at 120 chars; use this to see exactly what a wake will say, or to confirm what wake_update just changed.",
+    "description": "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates body at 120 chars; use this to see exactly what a wake will say, or to confirm what wake_update just changed. Its delivery state includes delivery_method (socket, socket-repeating, pty or pty-after-socket-timeout), delivered_by (the pid and build of the server that last set the delivery method, plus the firing number for repeating wakes), and socket_attempt_at, set when a wake was posted to a Claude lead's socket; for a repeating wake both describe its current firing (fire_count). An older repeat claim is identified in delivered_by_note as a claim; the older build types the firing into the pane without recording delivered_by.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -2556,7 +3087,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "List pending wake-ups in this project, plus recently_delivered: the last 10 one-shot wakes that have already fired, with their delivery state (typed_at, held_at/held_reason, confirmation). A one-shot wake leaves the pending list the moment it fires; recently_delivered is where to check whether it was actually typed and, if its target has a confirmation channel, acknowledged.",
+    "description": "List pending wake-ups in this project, plus recently_delivered: the last 10 one-shot wakes that have already fired, with their delivery state (typed_at, held_at/held_reason, confirmation, delivery_method, delivered_by, socket_attempt_at). A one-shot wake leaves the pending list the moment it fires; recently_delivered is where to check whether it was actually typed and, if its target has a confirmation channel, acknowledged.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -2581,7 +3112,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use instead of polling. Write the body self-contained: ids, context, next action - it may arrive in a session that has none of this conversation. Delivering to your OWN lead pane, where the context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
+    "description": "Schedule a wake-up: after delay_seconds, or at a local HH:MM time, the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use repeat='daily' with at for a DST-correct daily local-time schedule. The creating server's current IANA zone is captured; a later OS/time-zone change needs cancel and re-set. A nonexistent local minute skips that date, and an ambiguous minute uses its first occurrence only. Use instead of polling. Write the body self-contained: ids, context, next action - it may arrive in a session that has none of this conversation. Delivering to your OWN lead pane, where the context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -2589,6 +3120,10 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "at": {
+          "description": "Local wall-clock time in HH:MM format.",
+          "type": "string"
+        },
         "body": {
           "type": "string"
         },
@@ -2616,6 +3151,13 @@
           "maximum": 9007199254740991,
           "type": "integer"
         },
+        "repeat": {
+          "description": "Repeat a clock-time wake daily.",
+          "enum": [
+            "daily"
+          ],
+          "type": "string"
+        },
         "repeat_every_seconds": {
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
@@ -2623,7 +3165,6 @@
         }
       },
       "required": [
-        "delay_seconds",
         "body"
       ],
       "type": "object"
@@ -2666,7 +3207,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of delay_seconds, body, repeat_every_seconds. delay_seconds is RELATIVE TO NOW, exactly as in wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only changes the interval used for firings AFTER this one; on its own it does not move the next fire time. Only a still-pending wake can be edited; use wake_get to read the result back. delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so only body can be edited on one.",
+    "description": "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of at, repeat, delay_seconds, body, repeat_every_seconds. A clock wake keeps its captured zone; changing at recomputes due_at, while changing repeat alone does not move it. delay_seconds is RELATIVE TO NOW, exactly as in wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only changes the interval used for firings AFTER this one; on its own it does not move the next fire time. Only a still-pending wake can be edited; use wake_get to read the result back. delay_seconds and repeat_every_seconds apply to interval wakes; at and repeat apply to clock wakes. An idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds, so only body can be edited on one.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -2674,6 +3215,10 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "at": {
+          "description": "New local wall-clock time in HH:MM format for a clock wake.",
+          "type": "string"
+        },
         "body": {
           "type": "string"
         },
@@ -2687,6 +3232,13 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "repeat": {
+          "description": "Enable a daily repeat on a clock wake.",
+          "enum": [
+            "daily"
+          ],
+          "type": "string"
         },
         "repeat_every_seconds": {
           "exclusiveMinimum": 0,

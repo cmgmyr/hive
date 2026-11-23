@@ -4,7 +4,7 @@ import { resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { harnessNames } from "./harnesses.js";
 import { isValidProfileName } from "./profiles.js";
-import { errorMessage } from "./result.js";
+import { errorMessage } from "./errors.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 import {
   globalConfigPath,
@@ -40,10 +40,19 @@ export interface ProjectYml {
   first_message: string | null;
 
   context_checkpoint_percent: number | null;
-  lead_turn_budget: { warn: number; stop: number } | null;
+  lead_turn_budget: LeadTurnBudget | null;
   dashboard: boolean;
+  lead_sidebar: boolean;
+  quiet_messaging: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
+  completion_gate: string[] | null;
+}
+
+export interface LeadTurnBudget {
+  warn: number;
+  stop: number;
+  auto_handoff?: boolean;
 }
 
 export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
@@ -57,8 +66,11 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   context_checkpoint_percent: null,
   lead_turn_budget: null,
   dashboard: false,
+  lead_sidebar: true,
+  quiet_messaging: true,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
+  completion_gate: null,
 });
 
 export const PROJECT_YML_KEYS = Object.freeze(Object.keys(BUILT_IN_PROJECT_YML) as (keyof ProjectYml)[]);
@@ -73,6 +85,14 @@ export const NO_PROFILE = "none";
 export function activeProfile(config: ProjectYml | null): string | null {
   const name = config?.profile;
   return name == null || name === NO_PROFILE ? null : name;
+}
+
+export function quietMessagingEnabled(config: ProjectYml | null): boolean {
+  return config?.quiet_messaging ?? BUILT_IN_PROJECT_YML.quiet_messaging;
+}
+
+export function leadSidebarEnabled(config: ProjectYml | null): boolean {
+  return config?.lead_sidebar ?? BUILT_IN_PROJECT_YML.lead_sidebar;
 }
 
 // First entry is the default; absent or empty means claude only (todo 526).
@@ -124,6 +144,7 @@ export function resolveFirstMessage(
 
 export interface ResolvedHiveConfig {
   config: ProjectYml | null;
+  completionGateError?: string;
   warnings: string[];
   sources: Record<string, ConfigSource>;
   attach: { mode: AttachMode; source: ConfigSource };
@@ -209,6 +230,7 @@ function applyLayer(
   config: ProjectYml,
   sources: Record<string, ConfigSource>,
   warnings: string[],
+  completionGateError?: { value: string | undefined },
 ): void {
   const has = (key: string) => Object.hasOwn(root, key);
   const warn = (message: string) => warnings.push(`${path}: ${message}`);
@@ -251,7 +273,15 @@ function applyLayer(
       sources.lead_turn_budget = source;
     } else if (isMapping(value) && typeof value.warn === "number" && Number.isInteger(value.warn) && value.warn > 0 &&
       typeof value.stop === "number" && Number.isInteger(value.stop) && value.stop > value.warn) {
-      config.lead_turn_budget = { warn: value.warn, stop: value.stop };
+      const budget: LeadTurnBudget = { warn: value.warn, stop: value.stop };
+      if (value.auto_handoff !== undefined) {
+        if (typeof value.auto_handoff === "boolean") budget.auto_handoff = value.auto_handoff;
+        else {
+          budget.auto_handoff = false;
+          warn(`lead_turn_budget.auto_handoff must be true or false; ignoring "${String(value.auto_handoff)}", so automatic handoff stays off.`);
+        }
+      }
+      config.lead_turn_budget = budget;
       sources.lead_turn_budget = source;
     } else {
       warn("lead_turn_budget must contain positive integer warn and stop values, with stop greater than warn; ignoring it.");
@@ -267,6 +297,28 @@ function applyLayer(
       config.dashboard = value;
       sources.dashboard = source;
     } else warn(`dashboard must be true or false; ignoring "${String(value)}".`);
+  }
+
+  if (has("lead_sidebar")) {
+    const value = root.lead_sidebar;
+    if (value == null) {
+      config.lead_sidebar = BUILT_IN_PROJECT_YML.lead_sidebar;
+      sources.lead_sidebar = source;
+    } else if (typeof value === "boolean") {
+      config.lead_sidebar = value;
+      sources.lead_sidebar = source;
+    } else warn(`lead_sidebar must be true or false; ignoring "${String(value)}".`);
+  }
+
+  if (has("quiet_messaging")) {
+    const value = root.quiet_messaging;
+    if (value == null) {
+      config.quiet_messaging = BUILT_IN_PROJECT_YML.quiet_messaging;
+      sources.quiet_messaging = source;
+    } else if (typeof value === "boolean") {
+      config.quiet_messaging = value;
+      sources.quiet_messaging = source;
+    } else warn(`quiet_messaging must be true or false; ignoring "${String(value)}".`);
   }
 
   if (has("agents")) {
@@ -341,6 +393,30 @@ function applyLayer(
     }
   }
 
+  if (has("completion_gate")) {
+    if (source === "global") {
+      warn("global hive.yml cannot define `completion_gate`; only project commands can be trusted.");
+    } else {
+      const value = root.completion_gate;
+      if (value == null) {
+        config.completion_gate = null;
+        sources.completion_gate = source;
+      } else if (
+        Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((part) => typeof part === "string" && !part.includes("\0")) &&
+        (value[0] as string).trim() !== ""
+      ) {
+        config.completion_gate = value as string[];
+        sources.completion_gate = source;
+      } else {
+        const message = "completion_gate must be a non-empty list of strings without NUL, with a non-empty executable.";
+        warn(`${message} Refusing todo completion.`);
+        if (completionGateError) completionGateError.value = message;
+      }
+    }
+  }
+
   for (const key of ["attach", "autoAttach"] as const) {
     if (source === "project" && has(key)) warn(`${key} is global-only; ignoring it in project hive.yml.`);
   }
@@ -358,12 +434,13 @@ export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
   if (global.root) applyLayer(global.root, globalConfigPath(), "global", config, sources, warnings);
 
   let projectValid = false;
+  const completionGateError: { value: string | undefined } = { value: undefined };
   if (projectPath != null) {
     const file = resolve(projectPath, "hive.yml");
     const project = parseFile(file, warnings);
     if (project) {
       projectValid = true;
-      applyLayer(project, file, "project", config, sources, warnings);
+      applyLayer(project, file, "project", config, sources, warnings, completionGateError);
     }
   }
 
@@ -376,6 +453,7 @@ export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
 
   return {
     config: global.root || projectValid ? config : null,
+    ...(completionGateError.value ? { completionGateError: completionGateError.value } : {}),
     warnings,
     sources,
     attach: attachResult,

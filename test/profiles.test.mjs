@@ -227,7 +227,7 @@ describe("template rendering", () => {
     });
     assert.doesNotMatch(out, /<!--if:|<!--\s*end/);
     assert.match(out, /cmgmyr\/hive/);
-    assert.doesNotMatch(out, /TICKET LANE \(/, "the ticket section drops without ticket_prefix");
+    assert.doesNotMatch(out, /- Ticket \(/, "the ticket lane drops without ticket_prefix");
     assert.match(out, /A fresh worktree has no dependencies installed: npm install/);
   });
 });

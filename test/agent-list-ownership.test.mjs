@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, McpClient, paneField, scratchDirs, until } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, McpClient, paneField, scratchDirs, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the agent_list ownership tests");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 
 const BYSTANDER = `agent-list-bystander-${process.pid}`;

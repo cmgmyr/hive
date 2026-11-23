@@ -2,7 +2,7 @@
 
 hive configures the tmux windows it creates and sets the options it needs on each one. This file separates the one global recommendation from settings that merely make the workflow pleasant, because hive has no business prescribing your terminal.
 
-Everything here was measured on tmux 3.7b with Claude Code 2.1.221. Where a default surprised us, the measurement is written down next to it.
+Everything here was measured on tmux 3.7b with Claude Code 2.1.221. hive's CI tests the two newest tmux releases, built from source: 3.8 and 3.7c today. The pair is the `tmux` field of the ubuntu legs in `.github/workflows/ci.yml`. The macOS leg installs whatever `brew install tmux` gives, so Homebrew users get the newest release. Where a default surprised us, the measurement is written down next to it.
 
 Almost all of this applies to **raw attach mode** (`hive setup --attach raw`). Under iTerm control mode (`-CC`) iTerm renders tmux windows as native tabs and panes, so it supplies most of this itself.
 
@@ -21,6 +21,8 @@ Two places decide whether tmux attaches carry iTerm's control mode (`-CC`): your
 ## What hive needs
 
 hive marks its windows with `@hive-owned` and sets `allow-passthrough all`, `pane-border-status top`, `pane-border-format " #{pane_index} #{pane_title} "`, `monitor-bell on`, and `window-size smallest` on every window it creates, one tmux call after the pane and its process are already live. Panes inherit these from their window, and tmux resolves that inheritance when an option is read rather than when the pane is made, so a pane started before the write still gets the settings. `hive doctor` reports the effective values on hive-owned windows rather than inspecting your global configuration.
+
+Claude Code removes the dim styling from placeholders and suggested next prompts when `NO_COLOR` is set. Hive uses that styling to tell placeholders from typed input, so suggestions can make `agent_send` refuse and wakes hold. Panes inherit their environment from the tmux server, and `hive doctor` warns when the server carries `NO_COLOR` or when a server started from the current shell would pass it to workers. Unset `NO_COLOR` before starting tmux, or clear it from a running server with `tmux set-environment -g -u NO_COLOR`, then restart affected workers.
 
 `window-size smallest` matters once a second terminal is looking at the same session through a view session (see "Every terminal gets its own view onto the same windows" below): tmux's default, `latest`, resizes every window to whoever focused it last, so two clients fight over the size. `smallest` letterboxes a window to the smaller of the two clients' terminals instead, which is a real cost accepted deliberately: the letterboxing is a visible signal that a view session is open, not a bug to fix later.
 
@@ -57,6 +59,8 @@ hive sets these on its own windows so split workers remain distinguishable.
 hive names tmux windows for the project alone (the window holds the lead AND its workers now, not just the lead) and deliberately never names panes. The lead and each worker get a stable Claude session name from `claude --name`, which Claude writes to the terminal title, which tmux records as `pane_title`. Under `placement: split` every worker is a pane in one window, so with `pane-border-status off` (the default) a whole crew reads as one window called by the project's name alone, with no way to tell which pane is which.
 
 Do not try to solve this with `select-pane -T`. hive did consider it and rejected it: the application writes its own title afterwards and wins. Measured again on 2026-08-03, `select-pane -T "hive - worker-1"` held until the pane's Claude session wrote its own OSC 0 title, and then read whatever Claude set.
+
+If `agent_spawn` uses `placement: "window"` against a split `hive.yml`, run `hive layout` to gather live workers into the project's lead window and restore its configured layout. The command leaves unrelated panes in their source windows, so those windows remain until their last pane leaves.
 
 ## Suggested
 

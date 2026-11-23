@@ -1,9 +1,12 @@
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { preservedRolloutPath, reapCodexHome } from "./codexHome.js";
+import { codexHomeDir, preservedRolloutPath, reapCodexHome } from "./codexHome.js";
 import { getProject } from "./context.js";
+import { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
+import { gitOut } from "./git.js";
 import { dataDir, db } from "./db.js";
+import { cancelWorkerLeaseWaits, releaseWorkerLeases } from "./leaseStore.js";
 import { loadProjectYml } from "./projectYml.js";
+import { WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
 import {
   applyLayout,
   claimInitialWindow,
@@ -14,7 +17,7 @@ import {
   findProcessesWindow,
   findProjectWindow,
   isPaneTarget,
-  panePidForRecord,
+  paneProcessExited,
   paneWindow,
   PROCESSES_LAYOUT,
   processesPaneTitle,
@@ -23,8 +26,9 @@ import {
   rowLive,
   sessionName,
   setPaneTitle,
+  setRemainOnExit,
   makeProcessesWindow,
-  tmux,
+  tmux, paneEnvPath, tmuxWithClientPath,
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
@@ -86,6 +90,11 @@ export interface LaunchSpec {
   extraArgs?: string[];
   readOnly?: boolean;
 
+  todoId?: number;
+
+  forkedFromAgentId?: number;
+  forkedFromSessionId?: string;
+
   // The codexHome.ts key, if this worker needs a per-worker CODEX_HOME (harness.needsHome). Written
   // into the SAME INSERT that creates the row, before ensureCodexHome's mkdirSync ever runs - see
   // reapCodexHomeForClosedAgent below for why that ordering is load-bearing for reaping.
@@ -137,13 +146,23 @@ function recordPane(agentId: number, target: string, socket: string, pid: string
   );
 }
 
-function readPidOrDiscard(target: string): string {
-  const pid = panePidForRecord(target);
-  if (pid !== "") return pid;
+// The creation pid proves the pane existed, not that its process still runs. A retained pane is
+// left to the caller's readiness wait, which reports the exit with its tail.
+function refuseIfExitedImmediately(target: string, retained: boolean): void {
+  if (retained || paneProcessExited(target) !== true) return;
   discardOrphanedPane(target);
   throw new Error(
-    `tmux did not report a process id for the new pane ${target} (asked twice), so it was discarded rather than ` +
-      "recorded: a row with no pane pid can never be verified as owning its pane. Retry.",
+    `The command exited immediately, so its pane ${target} was discarded rather than recorded as running. ` +
+      "Check the command and its arguments, then retry.",
+  );
+}
+
+export function createdPidOrDiscard(target: string, pid: string): string {
+  if (/^\d+$/.test(pid)) return pid;
+  discardOrphanedPane(target);
+  throw new Error(
+    `tmux did not report a process id for the new pane ${target} when it created it, so it was discarded rather ` +
+      "than recorded: a row with no pane pid can never be verified as owning its pane. Retry.",
   );
 }
 
@@ -165,8 +184,12 @@ export function killAgentPane(target: string): void {
   const pane = isPaneTarget(target);
 
   const window = pane ? paneWindow(target) : null;
-  tmux(pane ? "kill-pane" : "kill-window", "-t", target);
+  killAgentPaneWithoutRelayout(target);
   relayoutAfterPaneLeft(window);
+}
+
+export function killAgentPaneWithoutRelayout(target: string): void {
+  tmux(isPaneTarget(target) ? "kill-pane" : "kill-window", "-t", target);
 }
 
 export function discardOrphanedPane(target: string): void {
@@ -204,16 +227,10 @@ export function asNameClash(e: unknown, name: string): unknown {
   return e;
 }
 
-export const LEAD_KIND = "lead";
-export const LEAD_ACTOR_PREFIX = `${LEAD_KIND}:`;
-export const isLeadActorId = (actorId: string): boolean => actorId.startsWith(LEAD_ACTOR_PREFIX);
-export const mintLeadActorId = (agentId: number): string => `${LEAD_ACTOR_PREFIX}${agentId}`;
+export { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
 
 export const isRunningLeadActor = (actorId: string): boolean =>
   !!db.prepare("SELECT 1 FROM agents WHERE actor_id = ? AND kind = ? AND status = 'running'").get(actorId, LEAD_KIND);
-
-export const LEAD_NAME = LEAD_KIND;
-export const isReservedAgentName = (name: string): boolean => name.toLowerCase() === LEAD_NAME;
 
 export function upsertActor(actorId: string, name: string, kind: string): void {
   db.prepare(
@@ -239,10 +256,12 @@ function placeAgentPane(
   envFlags: string[],
   commandString: string,
   title: string,
-): { target: string; landedInProjectId: number | null; layoutApplied: boolean; inProcessesWindow: boolean } {
+  onRetainArmed: (window: string) => void = () => {},
+): { target: string; pid: string; landedInProjectId: number | null; layoutApplied: boolean; inProcessesWindow: boolean } {
   let landedInProjectId: number | null = null;
   let layoutApplied = false;
   let inProcessesWindow = false;
+  let pid = "";
   const target = withWindowClaim((): string => {
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
@@ -252,14 +271,17 @@ function placeAgentPane(
 
       // Deliberate for placement "processes" too: this pane IS the new session's initial window, so it
       // takes that window rather than a tile. The caller reports it; `hive hide` moves it in later.
+      pid = started.pid;
       return claimInitialWindow(started, windowName, windowOwnerId).pane;
     }
     const splitInto = (window: string, layout: WindowLayout): string => {
-      const pane = tmux(
-        "split-window", "-d", "-P", "-F", "#{pane_id}",
+      const [pane, created = ""] = tmuxWithClientPath(paneEnvPath(),
+        "split-window", "-d", "-P", "-F", "#{pane_id}\t#{pane_pid}",
         "-t", window, "-c", spec.cwd, ...envFlags, commandString,
         ...(spec.retainOnExit ? retainOnExitArgs(window) : []),
-      );
+      ).split("\t");
+      pid = created;
+      if (spec.retainOnExit) onRetainArmed(window);
       applyLayout(window, layout);
       layoutApplied = true;
       return pane;
@@ -274,6 +296,8 @@ function placeAgentPane(
           session, processesWindowName(spec.projectName), spec.cwd, envFlags, commandString, null, true,
           spec.retainOnExit ?? false,
         );
+        pid = made.pid;
+        if (spec.retainOnExit) onRetainArmed(made.window);
         makeProcessesWindow(made.window, spec.projectId);
         pane = made.pane;
       }
@@ -290,12 +314,15 @@ function placeAgentPane(
         return pane;
       }
     }
-    return createWindow(
+    const made = createWindow(
       session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true,
       spec.retainOnExit ?? false,
-    ).pane;
+    );
+    pid = made.pid;
+    if (spec.retainOnExit) onRetainArmed(made.window);
+    return made.pane;
   });
-  return { target, landedInProjectId, layoutApplied, inProcessesWindow };
+  return { target, pid, landedInProjectId, layoutApplied, inProcessesWindow };
 }
 
 export function launchAgent(spec: LaunchSpec): {
@@ -305,6 +332,7 @@ export function launchAgent(spec: LaunchSpec): {
   landedInProjectId: number | null;
   layoutApplied: boolean;
   inProcessesWindow: boolean;
+  retainedWindow: string | null;
 } {
 
   if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
@@ -315,8 +343,8 @@ export function launchAgent(spec: LaunchSpec): {
     info = db
       .prepare(
 
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, codex_home, model, extra_args) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, codex_home, model, extra_args, todo_id, forked_from_agent_id, forked_from_session_id, resumed_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE '' END)",
       )
       .run(
         spec.projectId,
@@ -333,6 +361,10 @@ export function launchAgent(spec: LaunchSpec): {
         spec.readOnly
           ? JSON.stringify({ args: spec.extraArgs ?? [], read_only: true })
           : spec.extraArgs ? JSON.stringify(spec.extraArgs) : null,
+        spec.todoId ?? null,
+        spec.forkedFromAgentId ?? null,
+        spec.forkedFromSessionId ?? "",
+        spec.forkedFromAgentId ?? null,
       );
   } catch (e) {
 
@@ -342,6 +374,7 @@ export function launchAgent(spec: LaunchSpec): {
   const actorId = `${spec.kind}:${agentId}`;
 
   let paneUp = false;
+  let retainedWindow: string | null = null;
   try {
     const commandString =
       typeof spec.commandString === "string" ? spec.commandString : spec.commandString({ agentId, actorId });
@@ -358,18 +391,21 @@ export function launchAgent(spec: LaunchSpec): {
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placeAgentPane(
-      session, spec, envFlags, commandString, title,
-    );
-    const pid = readPidOrDiscard(target);
+    const placed = placeAgentPane(session, spec, envFlags, commandString, title, (window) => {
+      retainedWindow = window;
+    });
+    const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placed;
+    const pid = createdPidOrDiscard(target, placed.pid);
+    refuseIfExitedImmediately(target, spec.retainOnExit ?? false);
     paneUp = true;
 
     if (!recordPane(agentId, target, socket, pid)) {
       discardOrphanedPane(target);
       throw paneRacedRetirement(agentId);
     }
-    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow };
+    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow, retainedWindow };
   } catch (e) {
+    if (retainedWindow) setRemainOnExit(retainedWindow, false);
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
     throw e;
@@ -389,6 +425,7 @@ export interface ResumeSpec {
   placement: "split" | "window";
   layout?: WindowLayout;
   parentActor: string;
+  recoveryOnly?: boolean;
 
   // Merged under agentIdentityEnv the same way launchAgent merges spec.env (:245-248) - claude's
   // resume never needed this, so it defaulted to none; a codex resume needs CODEX_HOME pointed at
@@ -406,23 +443,29 @@ export const RESUME_FLIP_COLUMNS = [
   "parked_at",
   "parked_branch",
   "resumed_at",
+  "recovery_state",
   "tmux_socket",
   "command",
 ];
 
-export function resumeFlipSql(): string {
+export function resumeFlipSql(recoveryOnly = false): string {
 
   return (
     "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
-    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, ` +
+    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, recovery_state = '', ` +
     "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
-    "WHERE id = ? AND status = 'closed'"
+    `WHERE id = ? AND status = 'closed'${recoveryOnly ? " AND recovery_state = 'pending'" : ""}`
   );
 }
 
 function restoreFlippedRow(agentId: number, before: Record<string, string | null>): void {
+  const assignments = RESUME_FLIP_COLUMNS.map((column) =>
+    column === "recovery_state"
+      ? "recovery_state = CASE WHEN recovery_state = 'excluded' THEN 'excluded' ELSE ? END"
+      : `${column} = ?`,
+  ).join(", ");
   db.prepare(
-    `UPDATE agents SET ${RESUME_FLIP_COLUMNS.map((c) => `${c} = ?`).join(", ")} ` +
+    `UPDATE agents SET ${assignments} ` +
       "WHERE id = ? AND status = 'running' AND tmux_target = ''",
   ).run(...RESUME_FLIP_COLUMNS.map((c) => before[c] ?? null), agentId);
 }
@@ -437,7 +480,7 @@ export function resumeAgent(
   let flip: { before: Record<string, string | null> | undefined; changes: number };
 
   const captureBeforeFlip = db.prepare(`SELECT ${RESUME_FLIP_COLUMNS.join(", ")} FROM agents WHERE id = ?`);
-  const flipStatement = db.prepare(resumeFlipSql());
+  const flipStatement = db.prepare(resumeFlipSql(spec.recoveryOnly));
   try {
 
     flip = db
@@ -474,8 +517,10 @@ export function resumeAgent(
     });
     const session = sessionName();
     const title = windowTitle(spec.projectName, spec.name);
-    const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, spec.commandString, title);
-    const pid = readPidOrDiscard(target);
+    const placed = placeAgentPane(session, spec, envFlags, spec.commandString, title);
+    const { target, landedInProjectId } = placed;
+    const pid = createdPidOrDiscard(target, placed.pid);
+    refuseIfExitedImmediately(target, false);
     paneUp = true;
 
     if (!recordPane(spec.agentId, target, socket, pid)) {
@@ -533,35 +578,34 @@ export function renameAgent(
 }
 
 export function branchAt(cwd: string): string {
-  const git = (args: string[]): string | null => {
-    try {
-      return execFileSync("git", args, {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 2000,
-      }).trim();
-    } catch {
-      return null;
-    }
-  };
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = gitOut(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (branch === null) return "";
   if (branch !== "HEAD") return branch;
-  return git(["rev-parse", "--short", "HEAD"]) ?? "";
+  return gitOut(cwd, ["rev-parse", "--short", "HEAD"]) ?? "";
 }
 
-export function parkAgentRow(agentId: number, expected: string | RowPaneIdentity, branch: string): string | undefined {
-  const park =
-    "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
-    "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ?";
-  const row =
-    typeof expected === "string"
-      ? db.prepare(`${park} RETURNING parked_at`).get(branch, agentId, expected)
-      : db
-          .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
-          .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
-  return (row as { parked_at: string } | undefined)?.parked_at;
+export function parkAgentRow(agentId: number, expected: RowPaneIdentity, branch: string): string | undefined {
+  return parkAgentRowWithLeases(agentId, expected, branch).parked_at;
+}
+
+export function parkAgentRowWithLeases(
+  agentId: number,
+  expected: RowPaneIdentity,
+  branch: string,
+): { parked_at?: string; released_leases: string[] } {
+  return db.transaction(() => {
+    const row = db
+      .prepare(
+        "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
+          "parked_branch = ?, recovery_state = 'excluded' WHERE id = ? AND status = 'running' AND tmux_target = ? " +
+          "AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at",
+      )
+      .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid) as
+      | { parked_at: string }
+      | undefined;
+    if (!row) return { released_leases: [] };
+    return { parked_at: row.parked_at, released_leases: releaseWorkerLeases(agentId) };
+  })();
 }
 
 export const paneIdentity = (row: RowPaneIdentity): RowPaneIdentity => ({
@@ -621,63 +665,65 @@ export function releaseParkRow(agentId: number): boolean {
   );
 }
 
-// Row status alone is not the orphan test: a PARKED row is `status = 'closed'` too
-// (parkAgentRow above), and agent_park expects to resume it, cold-cache and all. `parked_at = ''`
-// is named explicitly rather than left to fall out of "closed" incidentally: codex can now be
-// parked too (harnessFor("codex").supportsResume, todo 563), exactly as this predicate already
-// assumed some non-claude harness eventually would - deriving the exclusion from harness capability
-// instead would have made this reap query's correctness depend on a table this file does not own.
-//
-// No conditional-UPDATE claim guards this, unlike closeAgentRow's "the conditional UPDATE is the
-// claim" - a deliberate difference, not a gap. That pattern earns its keep against an OBSERVABLE
-// side effect: a wake fired twice types into a pane twice. A reap has none - two instances racing
-// the same directory produce one deleted directory (rmSync's force:true swallows ENOENT even mid
-// recursive delete, not just on the top-level path), and the loser's `codex_home` update just
-// matches zero rows. Deleted twice is deleted once, so there is nothing here for a claim to arbitrate.
-//
-// rmSync runs before the clear, not after: if it throws (permissions, a mid-delete race), codex_home
-// stays set and this row is picked up again - by the next agent_close call, or by the janitor's own
-// backstop sweep - rather than the failure being silently swallowed by a claim that already fired.
-// The column IS the retry token; that is the guard here, it is just not shaped like a CAS.
-// Both callers wrap this, so a failure here costs a retry, never the close or the sweep it runs inside.
-// The target comes from the row's own transcript_path, not from reapCodexHome's returned list, so
-// a retry and a racing reap converge on the same file; the rewrite runs before the codex_home clear.
-export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string): void {
-  const before = db.prepare("SELECT transcript_path FROM agents WHERE id = ?").get(agentId) as
-    | { transcript_path: string }
-    | undefined;
-  const oldTranscriptPath = before?.transcript_path ?? "";
-  const dest = oldTranscriptPath ? preservedRolloutPath(codexHome, oldTranscriptPath) : undefined;
+// The selection can go stale while agent_resume claims the row, so revalidate and reap
+// under one SQLite writer claim before deleting the home.
+export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string): boolean | null {
+  return db.transaction(() => {
+    const row = db
+      .prepare(
+        `SELECT transcript_path FROM agents
+         WHERE id = ? AND codex_home = ? AND status = 'closed' AND parked_at = ''
+           AND (recovery_state != 'pending' OR closed_at <= datetime('now', ?))`,
+      )
+      .get(agentId, codexHome, `-${WORKER_RECOVERY_RETENTION_SECONDS} seconds`) as { transcript_path: string } | undefined;
+    if (!row) return null;
 
-  reapCodexHome(codexHome);
+    const oldTranscriptPath = row.transcript_path ?? "";
+    const dest = oldTranscriptPath ? preservedRolloutPath(codexHome, oldTranscriptPath) : undefined;
+    const homeExisted = existsSync(codexHomeDir(codexHome));
 
-  if (dest && existsSync(dest)) {
-    db.prepare("UPDATE agents SET transcript_path = ? WHERE id = ? AND transcript_path = ?").run(
-      dest,
-      agentId,
-      oldTranscriptPath,
-    );
-  }
-  db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
+    reapCodexHome(codexHome);
+
+    if (dest && existsSync(dest)) {
+      db.prepare("UPDATE agents SET transcript_path = ? WHERE id = ? AND transcript_path = ?").run(
+        dest,
+        agentId,
+        oldTranscriptPath,
+      );
+    }
+    db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
+    return homeExisted;
+  }).immediate();
 }
 
-export function closeAgentRow(agentId: number, expected?: string | RowPaneIdentity): boolean {
-  const info =
-    expected === undefined
-      ? db
-          .prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'")
-          .run(agentId)
-      : typeof expected === "string"
+export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): boolean {
+  return closeAgentRowWithLeases(agentId, expected).closed;
+}
+
+export function closeAgentRowWithLeases(
+  agentId: number,
+  expected?: RowPaneIdentity,
+  options: { releaseLeases?: boolean } = {},
+): { closed: boolean; released_leases: string[] } {
+  return db.transaction(() => {
+    const info =
+      expected === undefined
         ? db
             .prepare(
-              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' AND tmux_target = ?",
+              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'",
             )
-            .run(agentId, expected)
+            .run(agentId)
         : db
             .prepare(
               "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' " +
                 "AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ?",
             )
             .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
-  return info.changes > 0;
+    if (info.changes === 0) return { closed: false, released_leases: [] };
+    if (options.releaseLeases === false) cancelWorkerLeaseWaits(agentId);
+    return {
+      closed: true,
+      released_leases: options.releaseLeases === false ? [] : releaseWorkerLeases(agentId),
+    };
+  })();
 }

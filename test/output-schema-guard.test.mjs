@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { DIST, REPO } from "./helpers.mjs";
+import { startMcpClient } from "./mcp-client.mjs";
 
 // Written under the project tree, not os.tmpdir(): bare specifiers ("@modelcontextprotocol/sdk", "zod")
 // only resolve from inside REPO's node_modules.
@@ -31,59 +31,19 @@ await server.connect(new StdioServerTransport());
 
 after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
 
-function driveOneCall(scriptPath, toolName) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath], { cwd: REPO, stdio: ["pipe", "pipe", "inherit"] });
-    let buf = "";
-    const responses = [];
-    child.stdout.on("data", (d) => {
-      buf += d.toString();
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, i);
-        buf = buf.slice(i + 1);
-        if (line.trim()) {
-          try {
-            responses.push(JSON.parse(line));
-          } catch {
-            /* ignore non-JSON stdout noise */
-          }
-        }
-      }
-    });
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("timed out waiting for the fixture server"));
-    }, 8000);
-    function send(msg) {
-      child.stdin.write(`${JSON.stringify(msg)}\n`);
-    }
-    function waitFor(id) {
-      return new Promise((res) => {
-        const check = () => {
-          const found = responses.find((r) => r.id === id);
-          if (found) return res(found);
-          setTimeout(check, 20);
-        };
-        check();
-      });
-    }
-    (async () => {
-      send({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "guard-test", version: "0" } },
-      });
-      await waitFor(1);
-      send({ jsonrpc: "2.0", method: "notifications/initialized" });
-      send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: {} } });
-      const result = await waitFor(2);
-      clearTimeout(timer);
-      child.kill();
-      resolve(result);
-    })().catch(reject);
+async function driveOneCall(scriptPath, toolName) {
+  const client = startMcpClient(process.execPath, [scriptPath], {
+    cwd: REPO,
+    env: process.env,
+    timeoutMs: 8000,
+    clientInfo: { name: "guard-test", version: "0" },
   });
+  try {
+    await client.start();
+    return await client.request("tools/call", { name: toolName, arguments: {} });
+  } finally {
+    await client.close();
+  }
 }
 
 describe("the outputSchema wrapper fails loudly, not silently, on a bad handler", () => {

@@ -24,7 +24,9 @@ const {
   fetchPulse,
   PULSE_SQL,
   CHART_DAYS,
+  renderDashboardForWrite,
 } = await import("../dist/dashboard.js");
+const { pendingQuestionCount } = await import("../dist/questions.js");
 const { tick } = await import("../dist/scheduler.js");
 migrate();
 
@@ -40,7 +42,7 @@ function extractScript(html) {
   return html.slice(start, end);
 }
 
-function makeFakeToggleEnv(storedState) {
+function makeFakeToggleEnv(storedState, fakeDetails = [], { filter = false } = {}) {
   const sessionData = {};
   if (storedState !== undefined) sessionData["hive-dashboard-state"] = JSON.stringify(storedState);
 
@@ -56,6 +58,49 @@ function makeFakeToggleEnv(storedState) {
     getAttribute: () => "2026-08-07 20:34:36",
   };
   const elementsById = { "live-toggle": checkbox, "generated-stamp": stampEl };
+  const windowListeners = {};
+  const scrolls = [];
+  const details = fakeDetails.map((d) => ({
+    id: d.id,
+    kind: d.kind,
+    open: d.open ?? false,
+    absTop: d.absTop ?? 0,
+    inSection: d.inSection ?? null,
+    hidden: d.hidden ?? false,
+    pre: d.kind === "pad-item" ? { scrollTop: d.padScrollTop ?? 0 } : null,
+    listeners: [],
+    addEventListener(type, fn) {
+      if (type === "toggle") this.listeners.push(fn);
+    },
+    getBoundingClientRect() {
+      return { top: this.absTop - env.fakeWindow.scrollY };
+    },
+    querySelector() {
+      return this.pre;
+    },
+    closest(sel) {
+      if (sel === "[hidden]") return this.hidden ? this : null;
+      if (sel === "details.section:not([open])") {
+        const parent = elementsById[this.inSection];
+        return parent && !parent.open ? parent : null;
+      }
+      return null;
+    },
+  }));
+  for (const d of details) elementsById[d.id] = d;
+  const filterInput = {
+    value: "",
+    selectionStart: 0,
+    listeners: [],
+    addEventListener(type, fn) {
+      if (type === "input") this.listeners.push(fn);
+    },
+  };
+  if (filter) {
+    elementsById["todo-filter"] = filterInput;
+    elementsById["todo-list"] = { querySelectorAll: () => [] };
+  }
+  const byKind = (...kinds) => details.filter((d) => kinds.includes(d.kind));
 
   let armedCount = 0;
   let clearedCount = 0;
@@ -64,6 +109,22 @@ function makeFakeToggleEnv(storedState) {
   const env = {
     checkbox,
     stampEl,
+    details,
+    filterInput,
+    typeInFilter(value) {
+      filterInput.value = value;
+      for (const fn of filterInput.listeners) fn();
+    },
+    scrolls,
+    getActiveTimers: () => armedCount - clearedCount,
+    setOpen(id, open) {
+      const d = details.find((x) => x.id === id);
+      d.open = open;
+      for (const fn of d.listeners) fn();
+    },
+    fireWindow(type) {
+      for (const fn of windowListeners[type] || []) fn();
+    },
     getArmedCount: () => armedCount,
     getClearedCount: () => clearedCount,
     getReloaded: () => reloaded,
@@ -71,13 +132,24 @@ function makeFakeToggleEnv(storedState) {
   };
 
   env.fakeDocument = {
-    querySelectorAll: () => [],
+    querySelectorAll(sel) {
+      if (sel === "details[id]") return details;
+      if (sel === "details.pad-item, details.todo-item") return byKind("pad-item", "todo-item");
+      if (sel === "details.pad-item") return byKind("pad-item");
+      if (sel === "details.section") return byKind("section");
+      return [];
+    },
     getElementById: (id) => elementsById[id] || null,
   };
   env.fakeWindow = {
     scrollY: 0,
-    scrollTo() {},
-    addEventListener() {},
+    scrollTo(_x, y) {
+      this.scrollY = y;
+      scrolls.push(y);
+    },
+    addEventListener(type, fn) {
+      (windowListeners[type] ||= []).push(fn);
+    },
   };
   env.fakeSessionStorage = {
     getItem: (k) => (k in sessionData ? sessionData[k] : null),
@@ -161,6 +233,27 @@ function seedWake(projectId, { body, dueInSeconds, kind = "delay", maxWaitInSeco
     .get(projectId, body, kind);
 }
 
+function seedQuestion(projectId, {
+  asker = "agent:question-asker",
+  kind,
+  question,
+  header = "Header",
+  options = null,
+  defaultAnswer = "default answer",
+  refKind = null,
+  refNumber = null,
+  state = "pending",
+  createdAt = "2026-10-01 12:00:00",
+} = {}) {
+  const questionKind = kind ?? (options === null ? "free_text" : "choice");
+  return db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer,
+       ref_kind, ref_number, state, updated_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).get(projectId, asker, questionKind, question, header, options === null ? null : JSON.stringify(options), defaultAnswer,
+    refKind, refNumber, state, asker, createdAt).id;
+}
+
 function expectedLocal(utc) {
   const d = new Date(`${utc.replace(" ", "T")}Z`);
   const p2 = (n) => String(n).padStart(2, "0");
@@ -169,6 +262,155 @@ function expectedLocal(utc) {
     `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
   );
 }
+
+describe("dashboard reload pauses while a pad or todo is open (todo 1754)", () => {
+  const scriptSrc = () => extractScript(renderDashboard(seedProject(`pause-${projectCount}`)));
+  const PAUSED = "paused while a pad or todo is open";
+  const item = (id, over = {}) => ({ id, kind: id.startsWith("pad-") ? "pad-item" : "todo-item", ...over });
+
+  it("arms no timer and says paused when Live is on and a pad item is open at load from stored state", () => {
+    const env = makeFakeToggleEnv({ sections: { "pad-a": true } }, [item("pad-a")]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("opening an item clears the armed timer and closing the last open item arms exactly one", () => {
+    const env = makeFakeToggleEnv(undefined, [item("pad-a")]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 1);
+    env.setOpen("pad-a", true);
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+    env.setOpen("pad-a", false);
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+  });
+
+  it("stays paused when one of two open items closes", () => {
+    const env = makeFakeToggleEnv(undefined, [item("pad-a"), item("todo-1")]);
+    runToggleScript(scriptSrc(), env);
+    env.setOpen("pad-a", true);
+    env.setOpen("todo-1", true);
+    env.setOpen("pad-a", false);
+    assert.equal(env.getActiveTimers(), 0);
+    env.setOpen("todo-1", false);
+    assert.equal(env.getActiveTimers(), 1);
+  });
+
+  it("arms nothing when the last item closes with Live off, and turning Live on with an item open arms nothing", () => {
+    const off = makeFakeToggleEnv({ live: false, sections: { "pad-a": true } }, [item("pad-a")]);
+    runToggleScript(scriptSrc(), off);
+    off.setOpen("pad-a", false);
+    assert.equal(off.getArmedCount(), 0);
+
+    const on = makeFakeToggleEnv({ live: false, sections: { "pad-a": true } }, [item("pad-a")]);
+    runToggleScript(scriptSrc(), on);
+    on.checkbox.checked = true;
+    on.checkbox.listeners.change();
+    assert.equal(on.getActiveTimers(), 0);
+    assert.ok(on.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("ignores a details.section opening or closing", () => {
+    const env = makeFakeToggleEnv(undefined, [{ id: "section-todos", kind: "section", open: true }]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 1, "an open section must not pause the reload");
+    env.setOpen("section-todos", false);
+    env.setOpen("section-todos", true);
+    assert.equal(env.getActiveTimers(), 1);
+  });
+
+  it("restarts the 10s on scroll only while a timer is armed, and never arms one under an open item", () => {
+    const env = makeFakeToggleEnv(undefined, [item("pad-a")]);
+    runToggleScript(scriptSrc(), env);
+    env.fireWindow("scroll");
+    assert.equal(env.getArmedCount(), 2);
+    assert.equal(env.getActiveTimers(), 1);
+    env.setOpen("pad-a", true);
+    env.fireWindow("scroll");
+    assert.equal(env.getActiveTimers(), 0);
+  });
+
+  it("keeps Live off after the toggle is switched off, even when typing or scrolling afterwards", () => {
+    const env = makeFakeToggleEnv(undefined, []);
+    runToggleScript(scriptSrc(), env);
+    env.checkbox.checked = false;
+    env.checkbox.listeners.change();
+    env.fireWindow("scroll");
+    assert.equal(env.getActiveTimers(), 0);
+  });
+
+  it("saves a section anchor and each open pad's scrollTop on unload, and a second run restores both", () => {
+    const sections = [
+      { id: "section-a", kind: "section", open: true, absTop: 0 },
+      { id: "section-b", kind: "section", open: true, absTop: 1000 },
+    ];
+    const first = makeFakeToggleEnv(undefined, [...sections, item("pad-a", { open: true, padScrollTop: 240 })]);
+    first.fakeWindow.scrollY = 1300;
+    runToggleScript(scriptSrc(), first);
+    first.fireWindow("beforeunload");
+    const saved = JSON.parse(first.getSessionData()["hive-dashboard-state"]);
+    assert.deepEqual(saved.anchor, { id: "section-b", offset: 300 });
+    assert.deepEqual(saved.padScroll, { "pad-a": 240 });
+
+    const grown = [
+      { id: "section-a", kind: "section", open: true, absTop: 0 },
+      { id: "section-b", kind: "section", open: true, absTop: 1400 },
+    ];
+    const second = makeFakeToggleEnv({ ...saved, sections: { "pad-a": true } }, [...grown, item("pad-a")]);
+    runToggleScript(scriptSrc(), second);
+    assert.equal(second.scrolls.at(-1), 1700, "anchor top moved from 1000 to 1400, offset 300 is kept");
+    assert.equal(second.details.find((d) => d.id === "pad-a").pre.scrollTop, 240);
+  });
+
+  it("does not pause for an open todo the filter hides, and pauses again when the filter clears", () => {
+    const env = makeFakeToggleEnv(undefined, [item("todo-1")], { filter: true });
+    runToggleScript(scriptSrc(), env);
+    env.setOpen("todo-1", true);
+    assert.equal(env.getActiveTimers(), 0);
+    env.details[0].hidden = true;
+    env.typeInFilter("nomatch");
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+    env.details[0].hidden = false;
+    env.typeInFilter("");
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("does not pause for an open pad inside a collapsed section, and pauses again when the section reopens", () => {
+    const env = makeFakeToggleEnv(undefined, [
+      { id: "section-pads", kind: "section", open: true },
+      item("pad-a", { inSection: "section-pads" }),
+    ]);
+    runToggleScript(scriptSrc(), env);
+    env.setOpen("pad-a", true);
+    assert.equal(env.getActiveTimers(), 0);
+    env.setOpen("section-pads", false);
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+    env.setOpen("section-pads", true);
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("arms the timer on load when an open item sits inside a section stored as closed", () => {
+    const env = makeFakeToggleEnv({ sections: { "section-pads": false, "pad-a": true } }, [
+      { id: "section-pads", kind: "section", open: true },
+      item("pad-a", { inSection: "section-pads" }),
+    ]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+  });
+
+  it("falls back to the stored scrollY when the anchor element is gone", () => {
+    const env = makeFakeToggleEnv({ scrollY: 777, anchor: { id: "section-gone", offset: 5 } }, []);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.scrolls.at(-1), 777);
+  });
+});
 
 describe("renderDashboard: board section", () => {
   it("renders the board pad's content in full, in a <pre>, unreflowed", () => {
@@ -192,6 +434,17 @@ describe("renderDashboard: board section", () => {
         /pre\.board\s*{[^}]*overflow:\s*auto[^}]*max-height:/s.test(html),
       "pre.board must cap its height AND scroll, or Board opening by default buries every section below it",
     );
+  });
+
+  it("wraps pad text with pre-wrap and overflow-wrap anywhere so a long unbroken line never scrolls sideways", () => {
+    const project = seedProject("board-wraps-test");
+    seedPad(project, "board", "x".repeat(400));
+    const html = renderDashboard(project);
+    const rule = /pre\.board\s*{([^}]*)}/s.exec(html);
+    assert.ok(rule, "pre.board rule must exist");
+    assert.ok(/white-space:\s*pre-wrap/.test(rule[1]), "pre.board must be pre-wrap");
+    assert.ok(/overflow-wrap:\s*anywhere/.test(rule[1]), "pre.board must break unbroken runs");
+    assert.ok(!/white-space:\s*pre\s*;/.test(rule[1]), "pre.board must not be white-space: pre");
   });
 
   it("renders a designed empty state, naming the missing pad and how one gets written, when the project has no board pad", () => {
@@ -1016,6 +1269,77 @@ describe("renderDashboard: escaping is pinned at every sink, not the board pad a
   });
 });
 
+describe("renderDashboard: pending questions", () => {
+  it("dashboard lists pending questions with every field, in listQuestions order, and excludes answered and withdrawn rows", () => {
+    const project = seedProject("dashboard-questions-fields");
+    const first = seedQuestion(project, {
+      asker: "agent:<script>asker</script>",
+      question: "<script>alert(1)</script>",
+      header: "<script>",
+      options: [
+        { label: "Choice <script>", description: "<script>description</script>", recommended: true },
+        { label: "Other", description: "Another path", recommended: false },
+      ],
+      defaultAnswer: "Choice <script>",
+      refKind: "todo",
+      refNumber: 42,
+      createdAt: "2026-10-01 12:00:00",
+    });
+    const second = seedQuestion(project, { question: "second pending", header: "Second", createdAt: "2026-10-02 12:00:00" });
+    const third = seedQuestion(project, { question: "third pending", header: "Third", createdAt: "2026-10-03 12:00:00" });
+    const defaulted = seedQuestion(project, { question: "defaulted question", header: "Defaulted", state: "defaulted", createdAt: "2026-09-30 12:00:00" });
+    seedQuestion(project, { question: "answered question", state: "answered" });
+    seedQuestion(project, { question: "withdrawn question", state: "withdrawn" });
+
+    assert.equal(pendingQuestionCount(project), 3);
+    const html = renderDashboard(project);
+    const section = html.slice(html.indexOf('id="section-questions"'), html.indexOf('id="section-activity"'));
+    assert.match(section, /Questions<\/span><span class="pb-count">3 pending/);
+    assert.match(html, /data-section="questions"/);
+    for (const id of [first, second, third, defaulted]) assert.ok(section.includes(`#${id}`));
+    assert.ok(section.indexOf(`data-question="${first}"`) < section.indexOf(`data-question="${second}"`));
+    assert.ok(section.indexOf(`data-question="${second}"`) < section.indexOf(`data-question="${third}"`));
+    assert.ok(section.indexOf(`data-question="${third}"`) < section.indexOf(`data-question="${defaulted}"`));
+    assert.match(section, /free text/);
+    assert.match(section, /Choice &lt;script&gt;.*recommended/s);
+    assert.match(section, /default answer/);
+    assert.match(section, /agent:&lt;script&gt;asker&lt;\/script&gt;/);
+    assert.match(section, /todo #42/);
+    assert.match(section, /\d+[dhm] ago|now/);
+    assert.match(section, /hive answer \d+/);
+    assert.match(section, /defaulted - proceeding on the default/);
+    assert.ok(section.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    for (const raw of ["<script>alert(1)</script>", "<script>description</script>", "agent:<script>asker</script>"]) {
+      assert.ok(!section.includes(raw), `raw question field ${raw} must not reach HTML`);
+    }
+    for (const hidden of ["answered question", "withdrawn question"]) assert.ok(!section.includes(hidden));
+
+    const emptyProject = seedProject("dashboard-questions-no-open-rows");
+    seedQuestion(emptyProject, { question: "already answered", state: "answered" });
+    seedQuestion(emptyProject, { question: "already withdrawn", state: "withdrawn" });
+    const emptyHtml = renderDashboard(emptyProject);
+    assert.doesNotMatch(emptyHtml, /id="section-questions"|data-section="questions"/);
+  });
+
+  it("a new pending question changes the dashboard content hash", () => {
+    const project = seedProject("dashboard-questions-hash");
+    const before = renderDashboardForWrite(project);
+    seedQuestion(project, { question: "new question", header: "New" });
+    const after = renderDashboardForWrite(project);
+    assert.notEqual(after.contentHash, before.contentHash);
+    assert.notEqual(after.html, before.html);
+  });
+
+  it("question text wraps at narrow widths", () => {
+    const project = seedProject("dashboard-questions-wrap");
+    const longText = "x".repeat(2000);
+    seedQuestion(project, { question: longText });
+    const html = renderDashboard(project);
+    assert.ok(html.includes(longText), "the full long question is rendered");
+    assert.match(html, /\.prose\s*\{\s*overflow-wrap:\s*anywhere;/);
+  });
+});
+
 describe("renderDashboard: self-contained and read-only", () => {
   it("has no external CDN, font, or script references, no form, and no input that could enter data into the store", () => {
     const project = seedProject("selfcontained-test");
@@ -1339,7 +1663,7 @@ describe("renderDashboard: the todo filter (dashboard v2) - client-side, session
     if (storedState !== undefined) sessionData["hive-dashboard-state"] = JSON.stringify(storedState);
 
     const rows = rowTexts.map((text) => ({ textContent: text, hidden: false }));
-    const filterInput = { value: "", listeners: {}, addEventListener(t, fn) { this.listeners[t] = fn; } };
+    const filterInput = { value: "", listeners: {}, addEventListener(t, fn) { const prev = this.listeners[t]; this.listeners[t] = () => { if (prev) prev(); fn(); }; } };
     const countEl = { textContent: "" };
     const noneEl = { hidden: true };
     const navCountEl = { textContent: "" };
@@ -1535,7 +1859,7 @@ describe("renderDashboard: the review round's fixes (lead triage on 645f53c)", (
 
     let armed = 0;
     let cleared = 0;
-    const filterInput = { value: "", selectionStart: 0, handlers: {}, addEventListener(t, fn) { this.handlers[t] = fn; } };
+    const filterInput = { value: "", selectionStart: 0, handlers: {}, addEventListener(t, fn) { const prev = this.handlers[t]; this.handlers[t] = () => { if (prev) prev(); fn(); }; } };
     const sessionData = {};
     const elementsById = {
       "todo-filter": filterInput,

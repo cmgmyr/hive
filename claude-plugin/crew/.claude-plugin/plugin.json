@@ -1,0 +1,1 @@
+{ "name": "hive-crew", "version": "0.1.0", "description": "A docked crew pane for a hive lead, read from `hive crew --json`" }

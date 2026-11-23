@@ -17,12 +17,15 @@ agents: [claude, codex]         # crew harness pool agent_spawn may pick from; c
                                 # it stays the default. lead: above is separate and unaffected.
 
 context_checkpoint_percent: 70 # unset means off; percentage of the worker context window
+completion_gate: null          # optional project todo check; null keeps it disabled
 lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
 # first_message: "..."         # a lead's first turn; absent or "" sends none
 dashboard: true                 # write .hive/dashboard.html (hive dogfoods its own feature)
+# lead_sidebar: true           # a crew pane in a claude lead (docs/crew.md); restart the lead after changing
+# quiet_messaging: true        # wakes and worker messages reach a claude lead as one row; restart the lead after changing
 
 vars:
   shot: phone-dark, 390px wide # optional profile var; the lead opens this screenshot on UI lanes

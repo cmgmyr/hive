@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, scratchDirs } from "./helpers.mjs";
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { getPadMeta, bumpPad, createPad } = await import("../dist/tools/pads.js");
+await assertScratchStore();
+const { getPadMeta, bumpPad, createPad } = await import("../dist/pads.js");
 migrate();
 
 function makeProject(tmp, name) {

@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
+import { listQuestions, pendingQuestionCount } from "./questions.js";
+import { ACTIVE_TIMER_WHERE, isRepeatingWake } from "./wakeSql.js";
 import { db } from "./db.js";
+import { ACTIVE_TODO_SQL, NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { getProject } from "./context.js";
 import type { PaneVisibility } from "./tmux.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 // The dashboard's own input contract, defined here so this file keeps no runtime dependency on the
 // tmux-aware producer (src/processes.ts) that fills it.
@@ -29,9 +33,10 @@ export function processCounts(procs: ProcessSnapshot[]): {
   };
 }
 
-import { awaitingFirstPrompt } from "./firstPrompt.js";
+import { finishedIdle } from "./firstPrompt.js";
 
 import { SLUG_MAX_LEN, cutToUnitBudget } from "./slug.js";
+
 
 export const TODO_CAP = 100;
 export const AGENT_CAP = 50;
@@ -86,9 +91,9 @@ function formatDate(d: Date): string {
   );
 }
 
-function formatLocal(utc: string | null): string {
+export function formatLocal(utc: string | null): string {
   if (!utc) return "-";
-  const d = new Date(`${utc.replace(" ", "T")}Z`);
+  const d = new Date(parseStoreTimestamp(utc));
   if (Number.isNaN(d.getTime())) return utc;
   return formatDate(d);
 }
@@ -102,7 +107,7 @@ function timeEl(utc: string | null): string {
 // is the whole point of the line this renders.
 function shortWhenEl(utc: string | null): string {
   if (!utc) return '<span class="muted">-</span>';
-  const d = new Date(`${utc.replace(" ", "T")}Z`);
+  const d = new Date(parseStoreTimestamp(utc));
   if (Number.isNaN(d.getTime())) return `<span class="time">${escapeHtml(utc)}</span>`;
   const local = formatDate(d);
   const isToday = local.slice(0, 10) === formatDate(new Date()).slice(0, 10);
@@ -120,7 +125,6 @@ function fetchProject(projectId: number): { id: number; name: string } {
   return row;
 }
 
-const PENDING_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 function agentStatusLevel(state: string): StatusLevel {
   if (state === "working") return "live";
@@ -130,7 +134,7 @@ function agentStatusLevel(state: string): StatusLevel {
 }
 
 function agentStateBadge(a: { agent_state: string; resumed_at: string }): string {
-  return awaitingFirstPrompt(a) && a.agent_state === "idle"
+  return a.agent_state === "idle" && !finishedIdle(a)
     ? statusBadge("live", "idle (no assignment yet)")
     : statusBadge(agentStatusLevel(a.agent_state), a.agent_state);
 }
@@ -178,7 +182,7 @@ function fetchNextWake(projectId: number): NextWakeBrief | undefined {
   return db
     .prepare(
       `SELECT kind, due_at, max_wait_at, deliver_actor FROM wakes
-       WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
+       WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at) LIMIT 1`,
     )
     .get(projectId) as NextWakeBrief | undefined;
@@ -188,12 +192,9 @@ function fetchTodoCounts(projectId: number): TodoCounts {
   return db
     .prepare(
       `SELECT
-         (SELECT COUNT(*) FROM todos WHERE project_id = ? AND archived_at IS NULL AND status != 'completed') AS open,
-         (SELECT COUNT(*) FROM todos t WHERE t.project_id = ? AND t.archived_at IS NULL AND t.status != 'completed'
-            AND EXISTS (
-              SELECT 1 FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-               WHERE b.todo_id = t.id AND bt.status != 'completed'
-            )) AS blocked,
+         (SELECT COUNT(*) FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}) AS open,
+         (SELECT COUNT(*) FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
+            AND EXISTS (${OPEN_BLOCKERS_SQL})) AS blocked,
          (SELECT COUNT(*) FROM todos
             WHERE project_id = ? AND completed_at IS NOT NULL
               AND date(completed_at, 'localtime') >= date('now', 'localtime', '-6 days')) AS completed7d`,
@@ -377,7 +378,7 @@ interface OpenTodoRow {
   slug: string;
   status: string;
   priority: string;
-  open_blockers: number;
+  blocked: number;
 }
 
 interface BlockerRef {
@@ -387,10 +388,9 @@ interface BlockerRef {
 
 const OPEN_TODOS_SQL = `
   SELECT t.id, t.title, t.body, t.slug, t.status, t.priority,
-    (SELECT COUNT(*) FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-      WHERE b.todo_id = t.id AND bt.status != 'completed') AS open_blockers
+    EXISTS (${OPEN_BLOCKERS_SQL}) AS blocked
   FROM todos t
-  WHERE t.project_id = ? AND t.archived_at IS NULL AND t.status != 'completed'
+  WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
   ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, t.id`;
 
 function fetchBlockersFor(todoIds: number[]): Map<number, BlockerRef[]> {
@@ -400,7 +400,7 @@ function fetchBlockersFor(todoIds: number[]): Map<number, BlockerRef[]> {
   const rows = db
     .prepare(
       `SELECT b.todo_id, t.id, t.title FROM todo_blockers b JOIN todos t ON t.id = b.blocker_id
-       WHERE b.todo_id IN (${placeholders}) AND t.status != 'completed'`,
+       WHERE b.todo_id IN (${placeholders}) AND t.${NOT_COMPLETED_TODO_SQL}`,
     )
     .all(...todoIds) as (BlockerRef & { todo_id: number })[];
   for (const row of rows) {
@@ -419,11 +419,11 @@ function todoBadgeLevel(status: string, blocked: boolean): StatusLevel {
 function renderTodosSection(index: SectionMeta[], projectId: number): string {
   const all = db.prepare(OPEN_TODOS_SQL).all(projectId) as OpenTodoRow[];
   const shown = all.slice(0, TODO_CAP);
-  const blockersByTodo = fetchBlockersFor(shown.filter((t) => t.open_blockers > 0).map((t) => t.id));
-  const blockedCount = all.filter((t) => t.open_blockers > 0).length;
+  const blockersByTodo = fetchBlockersFor(shown.filter((t) => t.blocked).map((t) => t.id));
+  const blockedCount = all.filter((t) => t.blocked).length;
   const rows = shown
     .map((t) => {
-      const blocked = t.open_blockers > 0;
+      const blocked = Boolean(t.blocked);
       const blockers = blocked
         ? (blockersByTodo.get(t.id) ?? []).map((b) => `${mono(`#${b.id}`)} ${prose(b.title)}`).join(", ")
         : "";
@@ -463,7 +463,7 @@ function renderTodosSection(index: SectionMeta[], projectId: number): string {
       "open todos",
       "todos",
       rows,
-      emptyState("No open todos.", "Every todo in this project is completed or archived. New ones land here."),
+      emptyState("No open todos.", "No active todos are listed. New open or in-progress todos land here. Backlog todos stay off this list."),
       "todo-list",
     );
   return section(index, "todos", "Todos", `${all.length} open, ${blockedCount} blocked`, "checklist", String(shown.length), body);
@@ -633,14 +633,15 @@ interface WakeRow {
   max_wait_at: string | null;
   fire_count: number;
   repeat_every_ms: number | null;
+  clock_repeat: string | null;
   held_at: string | null;
 }
 
 function renderWakesSection(index: SectionMeta[], projectId: number): string {
   const all = db
     .prepare(
-      `SELECT id, kind, body, owner, deliver_actor, due_at, max_wait_at, fire_count, repeat_every_ms, held_at
-       FROM wakes WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
+      `SELECT id, kind, body, owner, deliver_actor, due_at, max_wait_at, fire_count, repeat_every_ms, clock_repeat, held_at
+       FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at)`,
     )
     .all(projectId) as WakeRow[];
@@ -650,7 +651,7 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
       const truncated = truncateWithEllipsis(w.body, 160);
       const when =
         w.kind === "delay"
-          ? `fires ${timeEl(w.due_at)}${w.repeat_every_ms ? ` <span class="muted">(repeats)</span>` : ""}`
+          ? `fires ${timeEl(w.due_at)}${isRepeatingWake(w) ? ` <span class="muted">(repeats)</span>` : ""}`
           : `fires when watched agents go idle, by ${timeEl(w.max_wait_at)} at the latest`;
 
       const status = statusBadge(w.held_at ? "warn" : "live", w.held_at ? "held" : "pending");
@@ -671,6 +672,52 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
     emptyState("No pending wakes.", "Scheduled and idle-triggered check-ins from wake_set show up here."),
   );
   return section(index, "wakes", "Wakes", `${all.length} pending`, "bell", String(shown.length), body);
+}
+
+function questionAge(createdAt: string): string {
+  const timestamp = parseStoreTimestamp(createdAt);
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}m ago`;
+  return "now";
+}
+
+function renderQuestionsSection(index: SectionMeta[], projectId: number): string {
+  const questions = listQuestions(projectId);
+  if (questions.length === 0) return "";
+  const pendingCount = pendingQuestionCount(projectId);
+  const rows = questions.map((question) => {
+    const options = question.kind === "free_text"
+      ? '<p class="question-options">free text</p>'
+      : `<ul class="question-options">${(question.options ?? []).map((option) =>
+          `<li>${prose(option.label)}${option.recommended ? ' <span class="recommended">recommended</span>' : ""}` +
+          `<span class="question-option-description">${prose(option.description)}</span></li>`,
+        ).join("")}</ul>`;
+    const ref = question.ref ? `<span class="question-ref">${question.ref.kind === "todo" ? "todo" : "PR"} #${question.ref.number}</span>` : "";
+    const state = question.state === "defaulted"
+      ? '<span class="question-state">defaulted - proceeding on the default</span>'
+      : '<span class="question-state">pending</span>';
+    return (
+      `<li class="question" data-question="${question.id}"><div class="question-head">${mono(`#${question.id}`)} ` +
+      `<strong>${escapeHtml(question.header)}</strong> ${state}</div>` +
+      `<p class="question-text">${prose(question.question)}</p>${options}` +
+      `<p class="question-default">Default answer: ${prose(question.default_answer)}</p>` +
+      `<p class="question-meta">Asked by ${mono(question.asker)} · ${escapeHtml(questionAge(question.created_at))}` +
+      `${ref ? ` · ${ref}` : ""}</p>` +
+      `<p class="question-answer">To answer: <code>hive answer ${question.id}</code></p></li>`
+    );
+  }).join("\n");
+  return section(
+    index,
+    "questions",
+    "Questions",
+    `${pendingCount} pending`,
+    "inbox",
+    String(pendingCount),
+    `<ul class="question-list">${rows}</ul>`,
+  );
 }
 
 interface ActivityEntry {
@@ -865,7 +912,7 @@ function renderCappedList(
   );
 }
 
-function chevron(): string {
+export function chevron(): string {
   return `<span class="chev">${icon("chevron")}</span>`;
 }
 
@@ -913,7 +960,7 @@ function renderSectionNav(metas: SectionMeta[]): string {
   return `<nav class="secnav" aria-label="dashboard sections"><ul>${links}</ul></nav>`;
 }
 
-const SPRITE = `<svg class="sprite" aria-hidden="true" focusable="false"><defs>
+export const SPRITE = `<svg class="sprite" aria-hidden="true" focusable="false"><defs>
 <symbol id="i-chevron" viewBox="0 0 16 16"><path d="M4 6.5 8 10.5l4-4"/></symbol>
 <symbol id="i-users" viewBox="0 0 16 16"><circle cx="6" cy="5.2" r="2.4"/><path d="M1.9 13.4a4.1 4.1 0 0 1 8.2 0"/><path d="M11 3.2a2.4 2.4 0 0 1 0 4.4"/><path d="M12.1 9.6a4.1 4.1 0 0 1 2 3.8"/></symbol>
 <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.4V8l2.6 1.7"/></symbol>
@@ -928,6 +975,133 @@ const SPRITE = `<svg class="sprite" aria-hidden="true" focusable="false"><defs>
 <symbol id="i-inbox" viewBox="0 0 16 16"><path d="M1.9 9.2h3.3l1 2h3.6l1-2h3.3"/><path d="M3.6 2.9h8.8l1.7 6.3v3.3a1.6 1.6 0 0 1-1.6 1.6H3.5a1.6 1.6 0 0 1-1.6-1.6V9.2Z"/></symbol>
 <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.4v3.6M8 5.2v.1"/></symbol>
 </defs></svg>`;
+
+export const SECTION_STYLE = `
+  [hidden] { display: none !important; }
+  svg.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+  .icon { width: 1em; height: 1em; flex: 0 0 auto; fill: none; stroke: currentColor;
+    stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .mono { font-family: var(--font-mono); font-size: 0.9em; font-variant-numeric: tabular-nums; }
+  .prose { overflow-wrap: anywhere; }
+
+  .section { margin: 0 0 0.6rem; background: var(--panel); border: 1px solid var(--card-border);
+    border-radius: var(--r-card); box-shadow: var(--shadow);
+    scroll-margin-top: calc(var(--header-offset) + 0.75rem); }
+  summary { cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  .section > summary { display: flex; align-items: center; gap: 0.55rem; padding: 0.85rem 1rem;
+    border-radius: var(--r-card); font-size: 0.9375rem;
+    transition: background-color 130ms ease; }
+  .sec-icon { display: inline-flex; color: var(--accent); font-size: 1.0625rem; }
+  .section > summary .pb-label { font-weight: 600; letter-spacing: -0.006em; }
+  .pb-count { color: var(--fg-subtle); font-size: 0.78125rem; font-variant-numeric: tabular-nums;
+    margin-left: auto; text-align: right; }
+  .chev { display: inline-flex; color: var(--fg-subtle); font-size: 1rem; margin-left: 0.15rem;
+    transition: transform 180ms var(--ease-out); }
+  details[open] > summary .chev { transform: rotate(180deg); }
+  summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-ctl); }
+  .section-body { padding: 0 1rem 1rem; }
+  .section > .section-body { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: -0.15rem; }
+
+  .row-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.6rem;
+    border-radius: var(--r-ctl); font-size: 0.875rem;
+    transition: background-color 130ms ease; }
+  .row-summary .pb-label { display: flex; align-items: center; gap: 0.42rem; flex-wrap: wrap;
+    min-width: 0; }
+  .row-summary .icon { color: var(--fg-subtle); }
+  details.pad-item, details.todo-item { margin: 0; }
+  details.pad-item > .section-body, details.todo-item > .section-body { padding: 0.1rem 0.6rem 0.7rem 0.6rem; }
+  .todo-body { overflow-wrap: anywhere; white-space: pre-wrap; color: var(--fg-muted);
+    font-size: 0.875rem; }
+  .todo-body + .todo-body { margin-top: 0.55rem; }
+
+  .meta, .muted { color: var(--fg-muted); }
+  .meta { font-size: 0.8125rem; margin: 0 0 0.75rem; max-width: 72ch; }
+  .muted { font-size: 0.8125rem; }
+  .cap-note { display: flex; align-items: center; gap: 0.4rem; color: var(--fg-subtle);
+    font-size: 0.78125rem; margin: 0 0 0.6rem; }
+  pre.board { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 60vh; background: var(--panel-sunken);
+    border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0.85rem;
+    font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.5; margin: 0;
+    overscroll-behavior: contain; }
+
+  ul.rows { list-style: none; margin: 0; padding: 0; }
+  ul.rows > li { padding: 0.35rem 0; border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 0.15rem; }
+  ul.rows > li:last-child { border-bottom: none; }
+  ul.rows > li.todo, ul.rows > li:has(> details) { padding: 0.1rem 0; }
+  .row-main { display: flex; align-items: center; gap: 0.42rem; flex-wrap: wrap; }
+  .row-meta { font-size: 0.78125rem; color: var(--fg-subtle); }
+  .kind { color: var(--fg-subtle); font-size: 0.78125rem; }
+
+  .status { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.71875rem;
+    font-weight: 600; letter-spacing: 0.01em; padding: 0.12rem 0.5rem; border-radius: var(--r-pill);
+    white-space: nowrap; }
+  .status::before { content: ""; width: 0.4rem; height: 0.4rem; border-radius: 50%;
+    background: currentColor; flex: 0 0 auto; }
+  .status-ok { color: var(--ok); background: var(--ok-bg); }
+  .status-warn { color: var(--warn); background: var(--warn-bg); }
+  .status-fail { color: var(--fail); background: var(--fail-bg); }
+  .status-live { color: var(--live); background: var(--live-bg); }
+
+  .chip { display: inline-flex; align-items: center; gap: 0.28rem; font-size: 0.71875rem;
+    font-weight: 600; padding: 0.12rem 0.48rem; border-radius: var(--r-pill); white-space: nowrap; }
+  .chip-blocked { color: var(--warn); background: var(--warn-bg); }
+  .chip-blocked .icon { stroke-width: 1.6; }
+
+  .tag { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 0.1rem 0.4rem; border-radius: 5px; background: var(--panel-sunken); color: var(--fg-subtle); }
+
+  .priority { font-size: 0.6875rem; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+  .priority-high { color: var(--fail); }
+  .priority-medium { color: var(--fg-muted); }
+  .priority-low { color: var(--fg-subtle); }
+  .blockers { font-size: 0.8125rem; color: var(--fg-muted); margin: 0 0 0.45rem 0.6rem; }
+  .wake-body { color: var(--fg); font-size: 0.875rem; overflow-wrap: anywhere; }
+  .question-list { display: grid; gap: 0.85rem; list-style: none; margin: 0; padding: 0; }
+  .question { border-bottom: 1px solid var(--border); padding-bottom: 0.85rem; overflow-wrap: anywhere; }
+  .question:last-child { border-bottom: 0; padding-bottom: 0; }
+  .question-head, .question-meta, .question-answer, .question-default, .question-text, .question-options { margin: 0.2rem 0; }
+  .question-head, .question-meta, .question-answer { font-size: 0.8125rem; }
+  .question-state, .question-ref, .recommended { color: var(--fg-muted); font-size: 0.75rem; }
+  .question-options { padding-left: 1.2rem; }
+  .question-option-description { display: block; padding-left: 0.5rem; color: var(--fg-muted); }
+  .question-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+  .activity-body { font-size: 0.8125rem; color: var(--fg-muted); white-space: pre-wrap;
+    overflow-wrap: anywhere; margin-top: 0.1rem; }
+
+  .filter { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .filter-field { display: flex; align-items: center; gap: 0.45rem; flex: 1 1 18rem;
+    background: var(--panel-sunken); border: 1px solid var(--border); border-radius: var(--r-ctl);
+    padding: 0.4rem 0.65rem; color: var(--fg-subtle);
+    transition: border-color 130ms ease, background-color 130ms ease; }
+  .filter-field:focus-within { border-color: var(--accent); background: var(--panel); }
+  .filter-field input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent;
+    font: inherit; font-size: 0.875rem; color: var(--fg); outline: none; padding: 0; }
+  .filter-field input::placeholder { color: var(--fg-subtle); }
+  .filter-field input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+  .filter-count { color: var(--fg-subtle); font-size: 0.78125rem; font-variant-numeric: tabular-nums;
+    margin: 0; flex: 0 0 auto; }
+  .filter-none { color: var(--fg-muted); font-size: 0.875rem; margin: 0.5rem 0; }
+
+  .empty { text-align: center; padding: 1.75rem 1rem 1.85rem; color: var(--fg-muted); }
+  .empty .icon { font-size: 1.5rem; color: var(--fg-subtle); stroke-width: 1.2; }
+  .empty-title { margin: 0.55rem 0 0.2rem; font-weight: 600; color: var(--fg); font-size: 0.9375rem; }
+  .empty-hint { margin: 0; font-size: 0.8125rem; color: var(--fg-subtle); max-width: 42ch;
+    margin-inline: auto; }
+
+  @media (hover: hover) and (pointer: fine) {
+    .section > summary:hover { background: var(--hover); }
+    .row-summary:hover { background: var(--hover); }
+  }
+  .section > summary:active, .row-summary:active { transform: scale(0.995); }
+  @media (max-width: 40rem) { .pb-count { font-size: 0.75rem; } }
+  @media (prefers-reduced-motion: reduce) {
+    .section > summary:active, .row-summary:active { transform: none; }
+  }
+`;
 
 const STYLE = `
   :root {
@@ -996,7 +1170,6 @@ const STYLE = `
   }
 
   *, *::before, *::after { box-sizing: border-box; }
-  [hidden] { display: none !important; }
   html { -webkit-text-size-adjust: 100%; }
   body {
     font-family: var(--font-sans);
@@ -1009,13 +1182,6 @@ const STYLE = `
     accent-color: var(--accent);
   }
   ::selection { background: var(--live-bg); color: var(--fg); }
-  svg.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
-  .icon { width: 1em; height: 1em; flex: 0 0 auto; fill: none; stroke: currentColor;
-    stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  .mono { font-family: var(--font-mono); font-size: 0.9em; font-variant-numeric: tabular-nums; }
-  .prose { overflow-wrap: anywhere; }
 
   .skip { position: absolute; left: -999px; top: 0; z-index: 10;
     background: var(--panel); color: var(--fg); padding: 0.6rem 0.9rem; border-radius: var(--r-ctl); }
@@ -1094,102 +1260,6 @@ const STYLE = `
   .pulse-bar { fill: var(--series-1); }
   .pulse-none { fill: var(--border-strong); }
 
-  .section { margin: 0 0 0.6rem; background: var(--panel); border: 1px solid var(--card-border);
-    border-radius: var(--r-card); box-shadow: var(--shadow);
-    scroll-margin-top: calc(var(--header-offset) + 0.75rem); }
-  summary { cursor: pointer; list-style: none; }
-  summary::-webkit-details-marker { display: none; }
-  .section > summary { display: flex; align-items: center; gap: 0.55rem; padding: 0.85rem 1rem;
-    border-radius: var(--r-card); font-size: 0.9375rem;
-    transition: background-color 130ms ease; }
-  .sec-icon { display: inline-flex; color: var(--accent); font-size: 1.0625rem; }
-  .section > summary .pb-label { font-weight: 600; letter-spacing: -0.006em; }
-  .pb-count { color: var(--fg-subtle); font-size: 0.78125rem; font-variant-numeric: tabular-nums;
-    margin-left: auto; text-align: right; }
-  .chev { display: inline-flex; color: var(--fg-subtle); font-size: 1rem; margin-left: 0.15rem;
-    transition: transform 180ms var(--ease-out); }
-  details[open] > summary .chev { transform: rotate(180deg); }
-  summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-ctl); }
-  .section-body { padding: 0 1rem 1rem; }
-  .section > .section-body { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: -0.15rem; }
-
-  .row-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.6rem;
-    border-radius: var(--r-ctl); font-size: 0.875rem;
-    transition: background-color 130ms ease; }
-  .row-summary .pb-label { display: flex; align-items: center; gap: 0.42rem; flex-wrap: wrap;
-    min-width: 0; }
-  .row-summary .icon { color: var(--fg-subtle); }
-  details.pad-item, details.todo-item { margin: 0; }
-  details.pad-item > .section-body, details.todo-item > .section-body { padding: 0.1rem 0.6rem 0.7rem 0.6rem; }
-  .todo-body { overflow-wrap: anywhere; white-space: pre-wrap; color: var(--fg-muted);
-    font-size: 0.875rem; }
-  .todo-body + .todo-body { margin-top: 0.55rem; }
-
-  .meta, .muted { color: var(--fg-muted); }
-  .meta { font-size: 0.8125rem; margin: 0 0 0.75rem; max-width: 72ch; }
-  .muted { font-size: 0.8125rem; }
-  .cap-note { display: flex; align-items: center; gap: 0.4rem; color: var(--fg-subtle);
-    font-size: 0.78125rem; margin: 0 0 0.6rem; }
-  pre.board { white-space: pre; overflow: auto; max-height: 60vh; background: var(--panel-sunken);
-    border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0.85rem;
-    font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.5; margin: 0;
-    overscroll-behavior: contain; }
-
-  ul.rows { list-style: none; margin: 0; padding: 0; }
-  ul.rows > li { padding: 0.35rem 0; border-bottom: 1px solid var(--border);
-    display: flex; flex-direction: column; gap: 0.15rem; }
-  ul.rows > li:last-child { border-bottom: none; }
-  ul.rows > li.todo, ul.rows > li:has(> details) { padding: 0.1rem 0; }
-  .row-main { display: flex; align-items: center; gap: 0.42rem; flex-wrap: wrap; }
-  .row-meta { font-size: 0.78125rem; color: var(--fg-subtle); }
-  .kind { color: var(--fg-subtle); font-size: 0.78125rem; }
-
-  .status { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.71875rem;
-    font-weight: 600; letter-spacing: 0.01em; padding: 0.12rem 0.5rem; border-radius: var(--r-pill);
-    white-space: nowrap; }
-  .status::before { content: ""; width: 0.4rem; height: 0.4rem; border-radius: 50%;
-    background: currentColor; flex: 0 0 auto; }
-  .status-ok { color: var(--ok); background: var(--ok-bg); }
-  .status-warn { color: var(--warn); background: var(--warn-bg); }
-  .status-fail { color: var(--fail); background: var(--fail-bg); }
-  .status-live { color: var(--live); background: var(--live-bg); }
-
-  .chip { display: inline-flex; align-items: center; gap: 0.28rem; font-size: 0.71875rem;
-    font-weight: 600; padding: 0.12rem 0.48rem; border-radius: var(--r-pill); white-space: nowrap; }
-  .chip-blocked { color: var(--warn); background: var(--warn-bg); }
-  .chip-blocked .icon { stroke-width: 1.6; }
-
-  .tag { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
-    padding: 0.1rem 0.4rem; border-radius: 5px; background: var(--panel-sunken); color: var(--fg-subtle); }
-
-  .priority { font-size: 0.6875rem; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
-  .priority-high { color: var(--fail); }
-  .priority-medium { color: var(--fg-muted); }
-  .priority-low { color: var(--fg-subtle); }
-  .blockers { font-size: 0.8125rem; color: var(--fg-muted); margin: 0 0 0.45rem 0.6rem; }
-  .wake-body { color: var(--fg); font-size: 0.875rem; overflow-wrap: anywhere; }
-  .activity-body { font-size: 0.8125rem; color: var(--fg-muted); white-space: pre-wrap;
-    overflow-wrap: anywhere; margin-top: 0.1rem; }
-
-  .filter { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
-  .filter-field { display: flex; align-items: center; gap: 0.45rem; flex: 1 1 18rem;
-    background: var(--panel-sunken); border: 1px solid var(--border); border-radius: var(--r-ctl);
-    padding: 0.4rem 0.65rem; color: var(--fg-subtle);
-    transition: border-color 130ms ease, background-color 130ms ease; }
-  .filter-field:focus-within { border-color: var(--accent); background: var(--panel); }
-  .filter-field input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent;
-    font: inherit; font-size: 0.875rem; color: var(--fg); outline: none; padding: 0; }
-  .filter-field input::placeholder { color: var(--fg-subtle); }
-  .filter-field input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
-  .filter-count { color: var(--fg-subtle); font-size: 0.78125rem; font-variant-numeric: tabular-nums;
-    margin: 0; flex: 0 0 auto; }
-  .filter-none { color: var(--fg-muted); font-size: 0.875rem; margin: 0.5rem 0; }
-
-  .empty { text-align: center; padding: 1.75rem 1rem 1.85rem; color: var(--fg-muted); }
-  .empty .icon { font-size: 1.5rem; color: var(--fg-subtle); stroke-width: 1.2; }
-  .empty-title { margin: 0.55rem 0 0.2rem; font-weight: 600; color: var(--fg); font-size: 0.9375rem; }
-  .empty-hint { margin: 0; font-size: 0.8125rem; color: var(--fg-subtle); max-width: 42ch;
-    margin-inline: auto; }
 
   svg.chart { width: 100%; height: auto; display: block; margin: 0 0 0.9rem;
     color: var(--fg-muted); }
@@ -1227,30 +1297,25 @@ const STYLE = `
   .swatch-2 { background: var(--series-2); }
 
   @media (hover: hover) and (pointer: fine) {
-    .section > summary:hover { background: var(--hover); }
-    .row-summary:hover { background: var(--hover); }
     .navchip:hover { background: var(--hover); color: var(--fg); }
   }
-  .section > summary:active, .row-summary:active { transform: scale(0.995); }
   .navchip:active { transform: scale(0.97); }
 
   @media (max-width: 40rem) {
     .wrap { padding: 0 0.9rem; }
     .now { grid-template-columns: 1fr; }
-    .pb-count { font-size: 0.75rem; }
     .navchip-label { position: absolute; width: 1px; height: 1px; padding: 0;
       margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   }
 
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
-    .section > summary:active, .row-summary:active, .navchip:active { transform: none; }
+    .navchip:active { transform: none; }
   }
-`;
+${SECTION_STYLE}`;
 
-const SCRIPT = `
-  (function () {
-    var KEY = "hive-dashboard-state";
+export const sectionScript = (key: string, between = ""): string => `
+    var KEY = "${key}";
     function load() {
       try { return JSON.parse(sessionStorage.getItem(KEY) || "{}"); } catch (e) { return {}; }
     }
@@ -1331,7 +1396,6 @@ const SCRIPT = `
         s.filterCaret = filterInput.selectionStart;
         save(s);
         applyFilter(filterInput.value);
-        deferReload();
       });
     }
 
@@ -1347,6 +1411,47 @@ const SCRIPT = `
     }
     measureHeader();
 
+${between}    function absTop(el) { return el.getBoundingClientRect().top + window.scrollY; }
+    var anchorEl = state.anchor && typeof state.anchor.id === "string"
+      ? document.getElementById(state.anchor.id) : null;
+    if (anchorEl && typeof state.anchor.offset === "number") {
+      window.scrollTo(0, absTop(anchorEl) + state.anchor.offset);
+    } else if (typeof state.scrollY === "number") {
+      window.scrollTo(0, state.scrollY);
+    }
+    var itemSel = "details.pad-item, details.todo-item";
+    var padItems = document.querySelectorAll("details.pad-item");
+    for (var pi = 0; pi < padItems.length; pi++) {
+      var saved = state.padScroll && state.padScroll[padItems[pi].id];
+      var padPre = padItems[pi].querySelector("pre.board");
+      if (padItems[pi].open && padPre && typeof saved === "number") padPre.scrollTop = saved;
+    }
+
+    window.addEventListener("beforeunload", function () {
+      var s = load();
+      s.scrollY = window.scrollY;
+      s.anchor = null;
+      var secs = document.querySelectorAll("details.section");
+      for (var k = 0; k < secs.length; k++) {
+        if (secs[k].getBoundingClientRect().top <= headerOffset) {
+          s.anchor = { id: secs[k].id, offset: window.scrollY - absTop(secs[k]) };
+        }
+      }
+      s.padScroll = {};
+      var openPads = document.querySelectorAll("details.pad-item");
+      for (var m = 0; m < openPads.length; m++) {
+        var pre = openPads[m].querySelector("pre.board");
+        if (openPads[m].open && pre && pre.scrollTop > 0) s.padScroll[openPads[m].id] = pre.scrollTop;
+      }
+      if (filterInput) {
+        s.filterFocused = document.activeElement === filterInput;
+        s.filterCaret = filterInput.selectionStart;
+      }
+      save(s);
+    });
+`;
+
+const NAV_SCRIPT = `
     // Section nav: mark the section the reader is currently in.
     var navLinks = document.querySelectorAll(".navchip");
     function paintNav() {
@@ -1371,8 +1476,11 @@ const SCRIPT = `
       window.addEventListener("resize", function () { measureHeader(); paintNav(); });
     }
 
-    if (typeof state.scrollY === "number") window.scrollTo(0, state.scrollY);
+`;
 
+const SCRIPT = `
+  (function () {
+${sectionScript("hive-dashboard-state", NAV_SCRIPT)}
     // Live toggle. Replaces <meta http-equiv="refresh">, which the browser
     // schedules at PARSE TIME - removing the tag afterward does not cancel it,
     // so a toggle could never turn it off. A setTimeout can be cleared, so this
@@ -1388,45 +1496,62 @@ const SCRIPT = `
     function clearReload() {
       if (reloadTimer !== null) { clearTimeout(reloadTimer); reloadTimer = null; }
     }
-    // Typing restarts the 10s rather than suspending it, so "refreshes every
-    // 10s" stays true - it is measured from the last keystroke, not from load.
+    function anyItemOpen() {
+      var items = document.querySelectorAll(itemSel);
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (it.open && !it.closest("details.section:not([open])") && !it.closest("[hidden]")) return true;
+      }
+      return false;
+    }
+    // Typing and scrolling restart the 10s rather than suspending it, so
+    // "refreshes every 10s" stays true; an open pad or todo suspends it.
     function deferReload() {
       if (!live) return;
       clearReload();
-      armReload();
+      if (!anyItemOpen()) armReload();
     }
     var toggle = document.getElementById("live-toggle");
     var stamp = document.getElementById("generated-stamp");
     var stampTime = stamp ? stamp.getAttribute("data-time") : "";
-    function paintStamp(live) {
+    var tail = " local. Read-only: nothing here writes back to the store.";
+    function paintStamp() {
       if (!stamp) return;
-      stamp.textContent = live
-        ? "generated " + stampTime + " local, refreshes every 10s. Read-only: nothing here writes back to the store."
-        : "paused, generated " + stampTime + " local. Read-only: nothing here writes back to the store.";
+      stamp.textContent = !live
+        ? "paused, generated " + stampTime + tail
+        : anyItemOpen()
+          ? "paused while a pad or todo is open, generated " + stampTime + tail
+          : "generated " + stampTime + " local, refreshes every 10s. Read-only: nothing here writes back to the store.";
     }
     var live = typeof state.live === "boolean" ? state.live : true;
     if (toggle) toggle.checked = live;
-    paintStamp(live);
-    if (live) armReload(); else clearReload();
+    paintStamp();
+    deferReload();
+    if (filterInput) {
+      filterInput.addEventListener("input", function () { paintStamp(); deferReload(); });
+    }
+    var items = document.querySelectorAll(itemSel);
+    for (var ii = 0; ii < items.length; ii++) {
+      items[ii].addEventListener("toggle", function () { paintStamp(); deferReload(); });
+    }
+    var sectionEls = document.querySelectorAll("details.section");
+    for (var si = 0; si < sectionEls.length; si++) {
+      sectionEls[si].addEventListener("toggle", function () { paintStamp(); deferReload(); });
+    }
     if (toggle) {
       toggle.addEventListener("change", function () {
         var s = load();
-        s.live = toggle.checked;
+        live = toggle.checked;
+        s.live = live;
         save(s);
-        paintStamp(toggle.checked);
-        if (toggle.checked) armReload(); else clearReload();
+        paintStamp();
+        if (live) deferReload(); else clearReload();
       });
     }
+    window.addEventListener("scroll", function () {
+      if (reloadTimer !== null) deferReload();
+    }, { passive: true });
 
-    window.addEventListener("beforeunload", function () {
-      var s = load();
-      s.scrollY = window.scrollY;
-      if (filterInput) {
-        s.filterFocused = document.activeElement === filterInput;
-        s.filterCaret = filterInput.selectionStart;
-      }
-      save(s);
-    });
   })();
 `;
 
@@ -1443,7 +1568,9 @@ function buildDashboard(projectId: number, procs: ProcessSnapshot[]): {
   const project = fetchProject(projectId);
   const stats = fetchDayStats(projectId);
   const index: SectionMeta[] = [];
+  const questionsSection = renderQuestionsSection(index, projectId);
   const cards = [
+    ...(questionsSection ? [questionsSection] : []),
     renderThroughputSection(index, stats),
     renderBoardSection(index, projectId),
     renderTodosSection(index, projectId),
@@ -1499,4 +1626,13 @@ export function renderDashboardForWrite(
   const { projectName, sections, html } = buildDashboard(projectId, procs);
   const contentHash = createHash("sha256").update(projectName).update("\0").update(sections).digest("hex");
   return { html, contentHash };
+}
+
+export function renderBoardPadsTodos(projectId: number): string {
+  const index: SectionMeta[] = [];
+  return [
+    renderBoardSection(index, projectId),
+    renderTodosSection(index, projectId),
+    renderPadsSection(index, projectId),
+  ].join("\n");
 }

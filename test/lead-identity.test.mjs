@@ -509,7 +509,9 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
   describe("STEP 1b: a pending lead-owned wake follows the lead across a restart", () => {
     it("re-points deliver_pane to the new pane in the same transaction, and actually delivers there", async () => {
       const fakeClaude = makeFakeClaude(dirs.tmp);
-      const claudePath = fakeClaude("sleep 600");
+      const claudePath = fakeClaude(
+        `cat '${join(process.cwd(), "test/fixtures/panes/ready-idle.txt")}'; exec cat`,
+      );
       const projectDir = newProjectDir();
       const cliOpts = {
         cwd: projectDir,

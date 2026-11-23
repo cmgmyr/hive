@@ -3,6 +3,7 @@ import { db } from "./db.js";
 import { awaitingFirstPrompt } from "./firstPrompt.js";
 import { harnessFor } from "./harnesses.js";
 import { sanitizeEventForDisplay, type Liveness } from "./tmux.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 const prepared = new Map<string, Statement>();
 function stmt(sql: string): Statement {
@@ -35,10 +36,6 @@ export interface ProvenanceRow {
   kind: string;
 
   resumed_at: string;
-}
-
-function parseStoreTimestamp(ts: string): number {
-  return new Date(`${ts.replace(" ", "T")}Z`).getTime();
 }
 
 export function ageSecondsSince(storeTimestamp: string, now: number = Date.now()): number {

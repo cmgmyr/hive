@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import vm from "node:vm";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, McpClient, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen dashboard tests");
 clearHiveEnv();
@@ -13,9 +13,11 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 migrate();
 const { addProject } = await import("../dist/context.js");
 const { parseQueenBrief, readQueenBrief, renderQueenDashboard, QUEEN_BRIEF_KEY } = await import("../dist/queenDashboard.js");
+const { renderDashboard } = await import("../dist/dashboard.js");
 const { tick, generateQueenDashboardNow } = await import("../dist/scheduler.js");
 
 after(() => {
@@ -67,6 +69,11 @@ const brief = (over = {}) => ({
 });
 const ready = (b) => ({ kind: "ready", brief: b });
 const count = (html, needle) => html.split(needle).length - 1;
+const queenScripts = (html) => {
+  const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const at = script.lastIndexOf("(function () {", script.indexOf("hive-queen-state"));
+  return { reload: script.slice(0, at), sections: script.slice(at) };
+};
 
 describe("parseQueenBrief", () => {
   it("accepts the v1 shape, including empty picks", () => {
@@ -134,6 +141,13 @@ describe("readQueenBrief", () => {
 });
 
 describe("renderQueenDashboard", () => {
+  it("lets the brief summary break an unbroken run instead of widening the page", () => {
+    const html = renderQueenDashboard(report(oneEach()), ready(brief({ summary: "S".repeat(300) })), noLinks);
+    const rule = /\.brief-summary,\s*\.brief-empty\s*{([^}]*)}/s.exec(html);
+    assert.ok(rule, "brief-summary rule must exist");
+    assert.ok(/overflow-wrap:\s*anywhere/.test(rule[1]) && /min-width:\s*0/.test(rule[1]));
+  });
+
   it("emits one card and one grid row per project, each project in exactly one lane, in lane order", () => {
     const projects = oneEach();
     const html = renderQueenDashboard(report(projects), { kind: "missing" }, noLinks);
@@ -160,14 +174,63 @@ describe("renderQueenDashboard", () => {
 
   it("lists needs-human titles with +N more, and labels reasons from the collector's codes", () => {
     const items = [1, 2].map((i) => ({ todo_id: i, title: `Title ${i}`, slug: null, updated_at: "2026-09-29 11:30:00" }));
-    const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, reasons: ["needs_human", "worker_needs_input"] });
+    const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, questions_pending: 2, reasons: ["needs_human", "questions_pending", "worker_needs_input"] });
     const html = renderQueenDashboard(report([p, proj(2, "stuck", { reasons: ["dead_lead_pane", "wake_overdue_5m"], lead: { state: "dead_pane", agent_id: 2, turn: "unknown" } })]), { kind: "missing" }, noLinks);
     assert.match(html, /Title 1/);
     assert.match(html, /\+5 more/);
+    assert.doesNotMatch(html, /Pending question/);
     assert.match(html, /A worker is waiting for input/);
     assert.match(html, /Lead pane is dead/);
     assert.match(html, /A wake is overdue/);
     assert.match(html, /lead dead/);
+  });
+
+  it("queen dashboard shows the pending-question count in card and table views", () => {
+    const html = renderQueenDashboard(
+      report([
+        proj(1, "moving", { needs_human: 1, questions_pending: 1 }),
+        proj(2, "waiting_on_you", { needs_human: 4, questions_pending: 3 }),
+      ]),
+      { kind: "missing" },
+      noLinks,
+    );
+    assert.match(html, /<span class="n-needs">1 need you<\/span><span class="n-questions">1 question<\/span>/);
+    assert.match(html, /<span class="n-needs">4 need you<\/span><span class="n-questions">3 questions<\/span>/);
+    assert.match(html, /<span class="c-n g-num"><span class="n-questions">1<\/span><\/span>/);
+    assert.match(html, /<span class="c-n g-num"><span class="n-questions">3<\/span><\/span>/);
+  });
+
+  it("zero question count matches sibling zero grid cells and stays out of compact text", () => {
+    const html = renderQueenDashboard(
+      report([proj(1, "moving", { questions_pending: 0, reasons: ["questions_pending", "worker_working"] })]),
+      { kind: "missing" },
+      noLinks,
+    );
+    const zeroCell = '<span class="c-n g-num"><span class="zero">0</span></span>';
+    assert.equal(html.split(zeroCell).length - 1, 4);
+    const compact = html.match(/<span class="c-nums">([\s\S]*?)<\/span><\/div>/)?.[1];
+    assert.ok(compact);
+    assert.doesNotMatch(compact, /n-questions|question(?:s)? pending|Pending question/);
+  });
+
+  it("pending-question reason label is not duplicated beside the count", () => {
+    const html = renderQueenDashboard(
+      report([proj(1, "moving", { questions_pending: 2, reasons: ["questions_pending", "worker_working"] })]),
+      { kind: "missing" },
+      noLinks,
+    );
+    assert.match(html, /<span class="n-questions">2 questions<\/span>/);
+    assert.doesNotMatch(html, /Pending question/);
+  });
+
+  it("queen dashboard renders a dormant lead neutrally and a dead pane as lead dead", () => {
+    const dormant = proj(5, "quiet", { lead: { state: "dormant", agent_id: 5, turn: "unknown", ended_at: "2026-10-08 12:34:56" } });
+    const dead = proj(6, "stuck", { lead: { state: "dead_pane", agent_id: 6, turn: "unknown", ended_at: null } });
+    const html = renderQueenDashboard(report([dormant, dead]), { kind: "missing" }, noLinks);
+    assert.equal((html.match(/lead dormant/g) ?? []).length, 2);
+    assert.match(html, /<span class="status status-off">lead dormant<\/span>/);
+    assert.match(html, /lead dead/);
+    assert.doesNotMatch(html, /status-fail">lead dormant/);
   });
 
   it("shows the report's turn beside lead up on a card and a grid row, and nothing when unknown", () => {
@@ -199,6 +262,56 @@ describe("renderQueenDashboard", () => {
     }
     assert.match(hostile, /<span class="proj">n&lt;b&gt;x&lt;\/b&gt;<\/span><span class="audit-op">op&lt;i&gt;/);
     assert.match(hostile, /<span class="proj">project #777<\/span>/);
+  });
+
+  it("every project card is a details element open by default", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.match(html, /<details class="card d-grid" id="queen-every-project" open><summary class="card-head"><h2>Every project /);
+    assert.equal(count(html, 'id="queen-every-project"'), 1);
+  });
+
+  it("recent queen actions card is a details element open by default", () => {
+    const row = { id: 1, actor_id: "a", home_project_id: 9, target_project_id: 1, operation: "todo_comment", resource_type: "todo", resource_id: 42, summary: "s", created_at: "2026-09-29 11:00:00" };
+    for (const audit of [[], [row]]) {
+      const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks, audit);
+      assert.match(html, /<details class="card c-audit" id="queen-recent-actions" open><summary class="card-head"><h2>Recent queen actions<\/h2>/);
+      assert.equal(count(html, 'id="queen-recent-actions"'), 1);
+    }
+  });
+
+  it("recent queen actions renders after the queen home project", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks, [], 1);
+    const home = html.indexOf('<div class="home">');
+    assert.ok(home > 0, "home block missing");
+    assert.ok(html.indexOf('class="card c-audit"') > home, "audit card precedes the home block");
+    assert.ok(html.indexOf('id="queen-every-project"') < home);
+  });
+
+  it("recent queen actions renders last without a queen home project", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.ok(!html.includes('<div class="home">'));
+    assert.ok(html.indexOf('class="card c-audit"') > html.indexOf('id="queen-every-project"'));
+    assert.ok(html.indexOf('class="card c-audit"') > html.indexOf('class="grid"'));
+  });
+
+  it("renders neither collapsible card with zero projects", () => {
+    const html = renderQueenDashboard(report([]), { kind: "missing" }, noLinks, [], 1);
+    assert.ok(!html.includes("queen-every-project") && !html.includes("queen-recent-actions"));
+    assert.ok(html.includes('<div class="home">'));
+  });
+
+  it("jump handler opens the row's enclosing details before scrolling", () => {
+    const { reload } = queenScripts(renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks));
+    const open = reload.indexOf('row.closest("details")');
+    assert.ok(open > 0, "handler never looks up the enclosing details");
+    assert.ok(reload.indexOf(".open = true", open) > open);
+    assert.ok(reload.indexOf(".open = true", open) < reload.indexOf("row.scrollIntoView"));
+  });
+
+  it("collapsed cards drop the bottom padding that only an open card needs", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.match(html, /\.c-audit\[open\] \{ padding-bottom/);
+    assert.match(html, /details\.card:not\(\[open\]\) > \.card-head \{ padding-bottom/);
   });
 
   it("shows an empty state line when there are no queen actions", () => {
@@ -371,7 +484,7 @@ describe("renderQueenDashboard", () => {
 
   it("starts the reload timer by default, stops it when stored off, and re-arms on toggle", () => {
     const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
-    const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+    const script = queenScripts(html).reload;
     const run = (stored) => {
       const timers = [];
       const listeners = {};
@@ -418,6 +531,115 @@ describe("renderQueenDashboard", () => {
   });
 });
 
+describe("renderQueenDashboard home project sections", () => {
+  const sectionOf = (html, id) =>
+    html.match(new RegExp(`<details class="section" id="section-${id}"[\\s\\S]*?(?=<details class="section" |</main>)`))?.[0] ?? "";
+  const mkProject = (name) => {
+    const dir = join(dirs.tmp, name);
+    mkdirSync(dir, { recursive: true });
+    return addProject(dir, name);
+  };
+  const seedPad = (pid, name, content) => db.prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, ?)").run(pid, name, content);
+  const seedTodo = (pid, title, status = "open") =>
+    db.prepare("INSERT INTO todos (project_id, title, priority, status, body, slug) VALUES (?, ?, 'medium', ?, '', '') RETURNING id").get(pid, title, status).id;
+  const render = (id) => renderQueenDashboard(report([proj(1, "quiet")]), { kind: "missing" }, noLinks, [], id);
+
+  it("renders the queen home project's Board, Pads and Todos below the portfolio", () => {
+    const q = mkProject("home-sections-q");
+    seedPad(q.id, "board", "WIND-DOWN: tomorrow we stop");
+    seedPad(q.id, "plan", "plan pad text");
+    seedPad(q.id, "notes", "notes pad text");
+    const blocker = seedTodo(q.id, "the blocker");
+    const blocked = seedTodo(q.id, "blocked work");
+    seedTodo(q.id, "finished work", "completed");
+    db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(blocked, blocker);
+    const html = render(q.id);
+    assert.ok(html.indexOf('id="section-board"') > html.indexOf('class="d-grid'), "sections sit below the portfolio");
+    assert.match(sectionOf(html, "board"), /WIND-DOWN: tomorrow we stop/);
+    const pads = sectionOf(html, "pads");
+    assert.match(pads, /2 pads/);
+    assert.match(pads, /id="pad-plan"/);
+    assert.match(pads, /id="pad-notes"/);
+    assert.doesNotMatch(pads, /WIND-DOWN/, "the board is not repeated in Pads");
+    const todos = sectionOf(html, "todos");
+    assert.match(todos, /2 open, 1 blocked/);
+    assert.match(todos, /blocked work/);
+    assert.match(todos, /chip-blocked/);
+    assert.doesNotMatch(todos, /finished work/);
+  });
+
+  it("an empty queen project renders the project dashboard's own empty states", () => {
+    const q = mkProject("home-sections-empty-q");
+    const project = renderDashboard(q.id);
+    const queen = render(q.id);
+    for (const id of ["board", "todos", "pads"]) {
+      const want = sectionOf(project, id).match(/<div class="empty">[\s\S]*?<\/div>/)?.[0];
+      assert.ok(want, `${id}: the project dashboard shows an empty state`);
+      assert.ok(sectionOf(queen, id).includes(want), `${id}: the queen page shows the identical empty state`);
+    }
+  });
+
+  it("reads only the queen's own project, never another project's board", () => {
+    const q = mkProject("home-sections-own-q");
+    const other = mkProject("home-sections-own-other");
+    seedPad(other.id, "board", "OTHER PROJECT BOARD");
+    seedTodo(other.id, "other project todo");
+    const html = render(q.id);
+    assert.doesNotMatch(html, /OTHER PROJECT BOARD|other project todo/);
+  });
+
+  it("emits no sections without a queen home id, and keeps one script element carrying the state restore", () => {
+    assert.doesNotMatch(render(null), /id="section-board"/);
+    const q = mkProject("home-sections-script-q");
+    seedTodo(q.id, "filterable");
+    const html = render(q.id);
+    assert.equal(count(html, "<script"), 1);
+    assert.match(html, /hive-queen-state/);
+    assert.match(html, /id="todo-filter"/);
+    assert.match(html, /id="i-inbox"/, "the icon sprite the sections reference is on the page");
+    assert.match(html, /id="autoreload"/);
+  });
+
+  it("pins id=topbar on the queen header, which the shared script measures", () => {
+    assert.match(render(null), /<header class="topbar" id="topbar">/);
+  });
+
+  it("runs the sections script: filters todos on input, persists the filter and measures the header", () => {
+    const q = mkProject("home-sections-vm-q");
+    seedTodo(q.id, "alpha todo");
+    seedTodo(q.id, "beta todo");
+    const { sections } = queenScripts(render(q.id));
+    const listeners = {};
+    const row = (text) => ({ textContent: text, hidden: false });
+    const rows = [row("alpha todo"), row("beta todo")];
+    const els = {
+      "todo-filter": { value: "", selectionStart: 0, addEventListener: (e, f) => (listeners[e] = f) },
+      "todo-filter-count": { textContent: "" },
+      "todo-filter-none": { hidden: true },
+      "todo-list": { querySelectorAll: () => rows },
+      topbar: { getBoundingClientRect: () => ({ top: 0, height: 64 }) },
+    };
+    const store = new Map();
+    const props = [];
+    vm.runInNewContext(sections, {
+      document: {
+        getElementById: (id) => els[id] ?? null,
+        querySelectorAll: () => [],
+        documentElement: { style: { setProperty: (k, v) => props.push([k, v]) } },
+      },
+      sessionStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+      window: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+    });
+    assert.equal(els["todo-filter-count"].textContent, "2 shown");
+    assert.deepEqual(props, [["--header-offset", "64px"]]);
+    els["todo-filter"].value = "alpha";
+    listeners.input();
+    assert.deepEqual(rows.map((r) => r.hidden), [false, true]);
+    assert.equal(els["todo-filter-count"].textContent, "1 of 2 shown");
+    assert.equal(JSON.parse(store.get("hive-queen-state")).filter, "alpha");
+  });
+});
+
 describe("queen dashboard generation", () => {
   const home = join(dirs.dataDir, "queen");
   const page = () => join(realpathSync(home), "dashboard.html");
@@ -440,6 +662,71 @@ describe("queen dashboard generation", () => {
     assert.match(html, /^<!doctype html>/);
     assert.match(html, /<\/html>\n$/);
     assert.match(html, /No queen brief yet/);
+  });
+
+  it("the queen page claim and mark keys round-trip through kv_get", async () => {
+    await tick(null);
+    const client = new McpClient({ cwd: home, dataDir: dirs.dataDir });
+    await client.start();
+    try {
+      const who = await client.call("whoami");
+      assert.equal(who.project.path, realpathSync(home));
+
+      const claim = await client.call("kv_get", { key: "hive:queen-page-claim" });
+      const mark = await client.call("kv_get", { key: "hive:queen-page-mark" });
+      const claimRow = db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-claim");
+      const markRow = db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-mark");
+
+      assert.equal(claim.value, "");
+      assert.equal(JSON.parse(claimRow.value), claim.value);
+      assert.match(mark.value, /^[a-f0-9]{64}$/);
+      assert.equal(JSON.parse(markRow.value), mark.value);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("queen page markers are JSON while the scheduler still accepts old raw hashes", async () => {
+    db.prepare("DELETE FROM kv WHERE project_id = ? AND key IN (?, ?)").run(
+      queen.id,
+      "hive:queen-page-claim",
+      "hive:queen-page-mark",
+    );
+    await tick(null);
+
+    const read = () =>
+      db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-mark").value;
+    const storedHash = read();
+    const hash = JSON.parse(storedHash);
+    assert.match(hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-claim").value), "");
+
+    const jsonHash = JSON.stringify(hash);
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run(
+      jsonHash,
+      queen.id,
+      "hive:queen-page-mark",
+    );
+    forceClaim();
+    await tick(null);
+    assert.equal(read(), jsonHash);
+
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run(
+      hash,
+      queen.id,
+      "hive:queen-page-mark",
+    );
+    db.prepare("INSERT OR REPLACE INTO kv (project_id, key, value) VALUES (?, ?, ?)").run(
+      queen.id,
+      QUEEN_BRIEF_KEY,
+      JSON.stringify(brief({ summary: "Changed from an old raw hash", picks: [], lanes_at_brief: {} })),
+    );
+    forceClaim();
+    await tick(null);
+    assert.match(readFileSync(page(), "utf8"), /Changed from an old raw hash/);
+    const refreshedHash = JSON.parse(read());
+    assert.match(refreshedHash, /^[a-f0-9]{64}$/);
+    assert.notEqual(refreshedHash, hash);
   });
 
   it("the generated page carries a real queen_audit row with its target project's name", () => {

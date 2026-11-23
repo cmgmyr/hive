@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
@@ -43,6 +43,7 @@ import {
   firstHiveOnPath,
   linkedWorktreePin,
   pathAdvice,
+  repinCommand,
   readDispatcher,
 } from "./dispatcher.js";
 import {
@@ -61,6 +62,7 @@ import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
 import { cacheIsStale, queryUpdate, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
 import { checkoutUpgradeSteps, detectInstallShape, globalUpgradeSteps, type UpgradeStep } from "./upgrade.js";
 import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
+import { staleHiveServers } from "./staleServers.js";
 import {
   addProject,
   agentProjectPin,
@@ -82,26 +84,26 @@ import {
 } from "./context.js";
 import { confirmQueenWrite, listQueenAudit } from "./queenAudit.js";
 import { formatRowCounts, projectRowCounts, removeProject } from "./projectRemove.js";
-import { ensureHooksFile } from "./hooks.js";
+import { ensureHooksFile, ensureLeadHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
-  ACTIVE_TIMER_WHERE,
   dashboardFileContained,
   describeStall,
-  HELD_REASON_CONVERSATION,
-  HELD_REASON_LEAD_PANE_DEAD,
-  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
-  isLeadRowClosedHold,
-  isUnclassifiablePaneHold,
-  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
-  isUnsubmittedInputHold,
   janitor,
   resolveDashboardFile,
   generateQueenDashboardNow,
   transcriptStaleness,
-  wasHeldForPaneIdentity,
 } from "./scheduler.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  heldWakeWhere,
+  socketAwaitingWhere,
+} from "./wakeSql.js";
 import { readTurnCount } from "./turnCount.js";
+import { leadSessionEnded } from "./leadState.js";
+import { heldReasonLabel } from "./heldLabel.js";
 import { collectPortfolio, leadText, type PortfolioProject } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
@@ -136,6 +138,7 @@ import {
   LEAD_KIND,
   LEAD_NAME,
   mintLeadActorId,
+  relayoutAfterPaneLeft,
   upsertActor,
   withWindowClaim,
 } from "./spawn.js";
@@ -163,6 +166,7 @@ import {
   orphanScratchServers,
   orphansWorthWarningAbout,
   paneIsAloneInWindow,
+  paneWindow,
   paneVisibility,
   panePidForRecord,
   type ProjectWindows,
@@ -189,14 +193,19 @@ import {
   makeProcessesWindow,
   tmux,
   TMUX_DOC,
-  tmuxSaysNothingThere,
+  TMUX_NOT_INSTALLED_MESSAGE,
+  tmuxNotInstalled, tmuxSaysNothingThere,
   tmuxTimeoutOverride,
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
   windowLayout,
 } from "./tmux.js";
-import { describeVisibility, processCounts } from "./dashboard.js";
+import { collectCrew, crewStoreProblem } from "./crew.js";
+import { resumeWorker, validateResumeWorker } from "./agentResume.js";
+import { markWorkerLost } from "./workerRecovery.js";
+import type { AgentRow } from "./agentRecords.js";
+import { describeVisibility, formatLocal, processCounts } from "./dashboard.js";
 import {
   runningCommandRow,
   runningCommandRows,
@@ -204,6 +213,8 @@ import {
   stopAllProcesses,
   stopLine,
   stopProcess,
+  renderStart,
+  type StartResult,
   STOP_REASONS,
 } from "./processes.js";
 import {
@@ -211,18 +222,23 @@ import {
   agentVarKeys,
   BUILT_IN_PROJECT_YML,
   configHash,
+  leadSidebarEnabled,
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
   PROJECT_YML_KEYS,
+  quietMessagingEnabled,
   type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
   resolveFirstMessage,
   type YmlProcess,
 } from "./projectYml.js";
-import { writeProjectPosture } from "./brief.js";
-import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
+import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
+import { completionGateTrust } from "./todoCompletionGate.js";
+import { handoffStatusSegment } from "./leadHandoff.js";
+import { cmdLeadHandoff, runHandoffGrace, runHandoffStart } from "./leadHandoffCli.js";
+import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import {
@@ -261,16 +277,16 @@ import {
 import {
   getTodoDetail,
   listTodoSummaries,
-  OPEN_BLOCKERS_SQL,
-  TODO_STATUSES,
   type TodoDetail,
-} from "./tools/todos.js";
+} from "./todos.js";
+import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL, TODO_STATUSES } from "./todoScope.js";
 import {
   createPad,
   getActivePadByName,
   listActivePads,
   overwritePadContent,
-} from "./tools/pads.js";
+} from "./pads.js";
+import { answerQuestion, listQuestions } from "./questions.js";
 
 function usage(): never {
   console.log(`hive — run a crew of Claude Code and Codex workers from one lead session
@@ -295,10 +311,15 @@ Usage:
   hive stop <process> [path]  stop one running process; --all stops every one
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
+  hive layout               gather this project's live workers and restore its configured layout
+  hive crew-restore [--dry-run] [--json]
+                             resume this project's workers marked for crash recovery
   hive status                overview of agents, todos, and wake-ups everywhere
+  hive crew --json           this project's workers, todos and wakes as one JSON
+                             snapshot; read-only, writes nothing
   hive portfolio [--json]    one row per registered project: lane, lead, workers,
                              todos, needs-human count, wakes; read-only
-  hive queen-audit           confirmed queen writes, newest first; 30-day history
+  hive queen-audit           queen writes and refused calls, newest first; 30-day history
     [--project-id <id>]      filter the target project (queen only across projects)
     [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
   hive next [--print]        attach to the lead of the project that needs you most
@@ -319,21 +340,29 @@ Usage:
                              one line by default
   hive pads                  list the current project's pads
   hive pad <name>            print a pad's content
-  hive pad <name> --edit     export to a temp file and open your markdown editor
-  hive pad <name> --save     write the edited export back (revision-guarded)
+  hive pad <name> --edit | --export  export, opening an editor only with --edit
+  hive pad <name> --save [--revision <n>]  write back with a revision guard
   hive todos [--all] [--status <s>] [--tag <t>]
                              list this project's todos; open work by default
   hive todo <id>             print one todo in full, comments included
+  hive questions [--json]   list pending and defaulted questions
+  hive answer <id> <answer> [--notes <text>]
+                             record an answer to a pending question
+                             use -- before an answer that starts with a dash
   hive backups               list automatic store snapshots
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive project rm <id|path> [--yes]
                              remove another project and everything it owns,
                              after a snapshot; never the one you are in
+  hive project mv <new-path> [--project-id <id>] [--dry-run | --apply]
+                             move this project's checkout and repoint hive,
+                             Claude and Codex records; previews unless --apply
   hive runbook               this project's standing process, vars resolved
   hive posture               the posture text this project's lead starts with
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
   hive profile [list|path|fork|create|read]  standing instructions shared across projects
   hive statusline            one-line store summary; silent outside hive projects
+  hive lead-handoff          a lead confirms its persisted handoff pad (run from a handoff request)
 
 hive lead reads hive.yml from the project root when present; hive init
 writes this starter file (uncomment what you need):
@@ -445,23 +474,22 @@ async function ensureTrusted(
   return true;
 }
 
-function isTrusted(
-  projectId: number,
+function startYmlCommand(
+  project: Project,
   name: string,
-  command: string,
-  dir: string | null,
-  env: Record<string, string>,
-): boolean {
-  const hash = configHash(name, command, dir, env);
-  return !!db
-    .prepare("SELECT 1 FROM command_trust WHERE project_id = ? AND name = ? AND config_hash = ?")
-    .get(projectId, name, hash);
-}
+  proc: YmlProcess,
+  config: ProjectYml,
+  trusted: boolean,
+): StartResult {
 
-function startYmlCommand(project: Project, name: string, proc: YmlProcess, config: ProjectYml): string {
+  if (!trusted) return { status: "refused", reason: "untrusted" } as const;
 
   if (isReservedAgentName(name)) {
-    return `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`;
+    return {
+      status: "refused",
+      reason: "reserved-name",
+      message: `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`,
+    } as const;
   }
   const existing = db
     .prepare("SELECT id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
@@ -472,17 +500,23 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess, confi
     if (live) {
       const windows = projectWindows(sessionName(), project.id);
       const where = windows === null ? null : paneVisibility(existing.tmux_target, windows);
-      return where === "shown" || where === "hidden" ? `already running (${where})` : "already running";
+      return { status: "already-running", location: where === "shown" || where === "hidden" ? where : null } as const;
     }
 
-    if (live === null) return "skipped: tmux could not be probed, so hive cannot tell whether it is already running";
+    if (live === null) {
+      return {
+        status: "refused",
+        reason: "unknown-liveness",
+        message: "skipped: tmux could not be probed, so hive cannot tell whether it is already running",
+      } as const;
+    }
     closeAgentRow(existing.id);
   }
   let dir: string;
   try {
     dir = resolveCommandDir(project.path, proc.dir);
   } catch (e) {
-    return `skipped: ${errorMessage(e)}`;
+    return { status: "refused", reason: "escaped-dir", message: `skipped: ${errorMessage(e)}` } as const;
   }
   const placement: "split" | "window" | "processes" = proc.visible
     ? (config.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split"))
@@ -507,16 +541,19 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess, confi
       setPaneTitle(target, shownPaneTitle(project.name, name));
       if (landedInProjectId != null) {
         const landedName = getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}`;
-        return `started, landed in project "${landedName}"'s window`;
+        return { status: "started", message: `started, landed in project "${landedName}"'s window` } as const;
       }
-      return "started";
+      return { status: "started", message: "started" } as const;
     }
-    return inProcessesWindow
-      ? "started (hidden)"
-      : "started in its own window: it opened this project's tmux session, and a session's first window " +
-          `cannot be a tile. Move it with: hive hide "${name}"`;
+    return {
+      status: "started",
+      message: inProcessesWindow
+        ? "started (hidden)"
+        : "started in its own window: it opened this project's tmux session, and a session's first window " +
+            `cannot be a tile. Move it with: hive hide "${name}"`,
+    } as const;
   } catch (e) {
-    return `failed: ${errorMessage(e)}`;
+    return { status: "failed", message: errorMessage(e) } as const;
   }
 }
 
@@ -691,15 +728,11 @@ function reportMigrationResult(result: ReturnType<typeof migrateLegacyConfig>): 
 }
 
 async function cmdLead(argv: string[]): Promise<void> {
-
-  const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard" && a !== "--detach");
-  if (unknownFlag !== undefined) {
-    console.error(`hive lead: unknown flag "${unknownFlag}". Flags are --no-dashboard and --detach.`);
-    process.exit(1);
-  }
-  const noDashboard = argv.includes("--no-dashboard");
-  const detach = argv.includes("--detach");
-  const path = argv.find((a) => !a.startsWith("--"));
+  const parsed = parseArgs(argv, { flags: ["--no-dashboard", "--detach"] });
+  rejectUnknownFlags("lead", parsed, "--no-dashboard and --detach");
+  const noDashboard = parsed.flags.has("--no-dashboard");
+  const detach = parsed.flags.has("--detach");
+  const path = parsed.positional[0];
 
   let registrationNotice: string | null = null;
   try {
@@ -719,6 +752,12 @@ async function cmdLead(argv: string[]): Promise<void> {
             proc.auto_start !== false && !isTrusted(project.id, name, proc.command, proc.dir, proc.env),
         )?.[0];
       }
+      if (!untrusted && config?.completion_gate) {
+        const gateTrust = completionGateTrust(config.completion_gate);
+        if (!isTrusted(project.id, gateTrust.name, gateTrust.command, gateTrust.dir, gateTrust.env)) {
+          untrusted = "completion gate";
+        }
+      }
       if (untrusted) {
         console.error(`hive lead: "${untrusted}" is not trusted; run hive lead <path> interactively once`);
         process.exitCode = 1;
@@ -728,7 +767,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     reportMigrationResult(migrateLegacyConfig());
     for (const w of warnings) console.log(`! ${w}`);
     const session = sessionName();
-    const hooksPath = ensureHooksFile();
+    const hooksPath = ensureLeadHooksFile(project.id, quietMessagingEnabled(config));
     let leadCommand = "claude";
     if (!config) {
       console.log(
@@ -740,6 +779,10 @@ async function cmdLead(argv: string[]): Promise<void> {
       } else {
         console.log("Using the default claude lead instead.");
       }
+    }
+    if (config?.completion_gate) {
+      const gateTrust = completionGateTrust(config.completion_gate);
+      await ensureTrusted(project.id, gateTrust.name, gateTrust.command, gateTrust.dir, gateTrust.env);
     }
 
     const executableProblem = leadExecutableProblem(leadCommand, project.path);
@@ -761,17 +804,9 @@ async function cmdLead(argv: string[]): Promise<void> {
     // Posture is rendered once, then delivered through whichever channel this harness has: a
     // claude lead gets it as --append-system-prompt-file below; a codex lead gets the identical
     // text as config.toml's developer_instructions, built after ensureLeadRow (it needs leadActorId).
-    const profile = activeProfile(config);
-    let renderedPosture: string | null = null;
-    let postureSource: string | undefined;
-    if (profile) {
-      const posture = resolveProfileFile(profile, "posture.md");
-      if (!posture) {
-        console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
-      } else {
-        renderedPosture = renderProfileFile(profile, "posture.md", mergedProjectVars(config)) ?? "";
-        postureSource = posture.source;
-      }
+    const { profile, rendered: renderedPosture, source: postureSource } = renderLeadPosture(config);
+    if (profile && renderedPosture === null) {
+      console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
     }
 
     if (leadHarness.needsHome) {
@@ -784,17 +819,18 @@ async function cmdLead(argv: string[]): Promise<void> {
         console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
       }
     } else {
-      if (!carriesNameFlag(leadCommand.trim().split(/\s+/))) {
-        leadCommand += ` --name ${shellQuote(project.name)}`;
-      }
-      leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
+      ({ command: leadCommand, promptSuffix } = appendClaudeLeadArgs({
+        command: leadCommand,
+        harness: leadHarness,
+        projectId: project.id,
+        projectName: project.name,
+        hooksPath,
+        sidebarPluginDir: leadSidebarEnabled(config) && leadHarness.name === "claude" ? crewPluginDir() : null,
+        posture: renderedPosture,
+        firstMessage,
+      }));
       if (renderedPosture !== null) {
-        const posturePath = writeProjectPosture(project.id, renderedPosture);
-        leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(posturePath).map(shellQuote).join(" ")}`;
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
-      }
-      if (leadHarness.initialPromptArgs && firstMessage !== "") {
-        promptSuffix = ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
       }
     }
 
@@ -818,14 +854,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     // actually starts under it) and correct regardless of whether this invocation ends up creating
     // a pane or adopting one. Which home ends up orphaned - this one, or the previous invocation's -
     // is decided after createdPane is known, below.
-    const leadEnv = {
-      HIVE_AGENT_ID: leadActorId,
-      HIVE_AGENT_NAME: LEAD_NAME,
-      HIVE_LEAD: "1",
-      HIVE_DATA_DIR: dataDir,
-      HIVE_PROJECT_LOCK: "",
-      HIVE_PROJECT_PATH: "",
-    };
+    const leadEnv = leadIdentityEnv(leadActorId);
     let newCodexHomeKey: string | undefined;
     if (leadHarness.needsHome) {
       newCodexHomeKey = randomUUID();
@@ -904,19 +933,22 @@ async function cmdLead(argv: string[]): Promise<void> {
           createdPane = true;
         } else {
 
+          const firstPane = tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}").split("\n")[0];
           leadPane = tmux(
             "split-window",
+            "-b",
             ...(detach ? ["-d"] : []),
             "-P",
             "-F",
             "#{pane_id}",
             "-t",
-            foundWindow,
+            firstPane || foundWindow,
             "-c",
             project.path,
             ...envFlags,
             launchCommand,
           );
+          relayoutAfterPaneLeft(foundWindow);
           leadWindow = foundWindow;
           createdPane = true;
         }
@@ -975,7 +1007,8 @@ async function cmdLead(argv: string[]): Promise<void> {
 
         const updated = db
           .prepare(
-            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? " +
+            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ?, " +
+              "pane_started_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE pane_started_at END " +
               "WHERE id = ? AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ? AND status = 'running'",
           )
           .run(
@@ -984,6 +1017,7 @@ async function cmdLead(argv: string[]): Promise<void> {
             recordedPanePid,
             recordedCommand,
             recordedCodexHome,
+            createdPane ? 1 : 0,
             leadAgentId,
             casExpected,
             casSocket,
@@ -992,7 +1026,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         if (updated === 0) return false;
         db.prepare(
           `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
-           WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
+           WHERE ((${ACTIVE_TIMER_WHERE}) OR (${socketAwaitingWhere()})) AND deliver_actor = ?
              AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
         ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
         confirmQueenWrite("hive lead", project.id, { detach }, {
@@ -1037,9 +1071,9 @@ async function cmdLead(argv: string[]): Promise<void> {
           console.log(`- ${name}: defined, auto_start off (start with: hive start "${name}")`);
           continue;
         }
-        if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-          console.log(`- ${name}: ${startYmlCommand(project, name, proc, config)}`);
-        }
+        const trusted = await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env);
+        const result = startYmlCommand(project, name, proc, config, trusted);
+        if (trusted) console.log(`- ${name}: ${renderStart(result)}`);
       }
     }
 
@@ -1139,10 +1173,15 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # first_message: "..."         # a lead's first turn; absent or "" sends none
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
+# completion_gate: null       # optional project todo check; null keeps it disabled
 
-# lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
+# lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults on
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
+
+# lead_sidebar: false           # disable the crew pane in a claude lead; restart the lead
+
+# quiet_messaging: false       # use typed wakes and worker messages instead of one row; restart the lead
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}
@@ -1151,8 +1190,13 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 #   start_command: /jira-start
 #   check: npm run lint && npx tsc --noEmit   # what a worker runs before
                                               # reporting done; gates only,
-                                              # no suite (test_all is that)
+                                              # no suite (suite_command is that)
 #   check: ./vendor/bin/pint --test && ./vendor/bin/phpstan   # a PHP stack's
+#   test_command: npm test -- test/foo.test.mjs   # scoped check for one change
+#   suite_command: npm test     # full suite; one run at a time, lead's slot
+#   verify_command: npm run build && node dist/cli.js --version   # exercises the real outcome
+#   review_command: /review     # a fresh-context reviewer, if your harness has one
+#   worker_model: sonnet        # the cheaper tier workers spawn on
 #   ci: weekly                  # absent: CI runs on push/PR. weekly: CI runs
                                 # on schedule + dispatch only, and the local
                                 # full suite gates the merge
@@ -1569,6 +1613,7 @@ function profileSizeAdvisory(name: string, file: string): string {
 
 function cmdProfile(argv: string[]): void {
   const [sub, ...rest] = argv;
+  if (sub?.startsWith("-")) rejectUnknownFlags("profile", parseArgs(argv, {}), "none");
 
   try {
     switch (sub) {
@@ -1691,6 +1736,7 @@ function cmdProfile(argv: string[]): void {
   }
 }
 
+
 const DASHBOARD_OPENED_KV_KEY = "hive:dashboard_opened";
 
 const DASHBOARD_OPENED_TTL_SECONDS = 8 * 60 * 60;
@@ -1744,13 +1790,9 @@ function openDashboardOnce(project: Project, dashboardFile: string): void {
 }
 
 function cmdAttach(argv: string[]): void {
-
-  const unknownFlag = argv.find((a) => a.startsWith("--"));
-  if (unknownFlag !== undefined) {
-    console.error(`hive attach: unknown flag "${unknownFlag}". hive attach takes no flags.`);
-    process.exit(1);
-  }
-  const path = argv.find((a) => !a.startsWith("--"));
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("attach", parsed, "none");
+  const path = parsed.positional[0];
   const project = resolveProjectForWrite("hive attach", path);
   maybeOpenDashboard(project, !!loadProjectYml(project.path).config?.dashboard);
   const session = sessionName();
@@ -1793,9 +1835,10 @@ async function cmdStart(argv: string[]): Promise<void> {
     console.log(processNotDefined(config, name));
     process.exit(1);
   }
-  if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-    console.log(`${name}: ${startYmlCommand(project, name, proc, config)}`);
-  }
+  const trusted = await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env);
+  const result = startYmlCommand(project, name, proc, config, trusted);
+  if (trusted) console.log(`${name}: ${renderStart(result)}`);
+  if (!trusted || result.status === "failed" || result.status === "refused") process.exitCode = 1;
 }
 
 function processNotDefined(config: ProjectYml | null, name: string): string {
@@ -1857,6 +1900,8 @@ function resolveNamedProcess(
 
 const LEAD_PANE_EXITED_HOOK = "pane-exited";
 const LEAD_PANE_EXITED_VERB = "lead-pane-exited";
+const LEAD_HANDOFF_GRACE_VERB = "lead-handoff-grace";
+const LEAD_HANDOFF_START_VERB = "lead-handoff-start";
 
 // tmux runs a hook with the SERVER's environment and no login shell, so a bare `hive` resolves to
 // nothing (the iTerm rule in .claude/rules/tmux-and-panes.md) and HIVE_DATA_DIR is not there at all
@@ -1918,7 +1963,7 @@ const leadPaneExitedHookArmed = (): boolean =>
 function cmdLeadPaneExited(argv: string[]): void {
   try {
     const parsed = parseArgs(argv, {});
-    if (parsed.unknown.length > 0) return;
+    rejectUnknownFlags("lead-pane-exited", parsed, "none");
     const pane = parsed.positional[0];
     if (!pane) return;
     // Pane id alone, with no socket compare: a global hook only ever runs on the server it was
@@ -2047,12 +2092,130 @@ function cmdHide(argv: string[]): void {
   );
 }
 
+function cmdLayout(argv: string[]): void {
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("layout", parsed, "none");
+  if (parsed.positional.length > 0) {
+    console.error("Usage: hive layout");
+    process.exit(1);
+  }
+
+  const project = resolveProjectForRead("layout");
+  const { config } = loadProjectYml(project.path);
+  if (config?.placement === "window") {
+    console.log("placement is window in hive.yml; nothing to gather");
+    return;
+  }
+  const layout = config?.layout ?? DEFAULT_LAYOUT;
+  const session = sessionName();
+
+  const result = withWindowClaim((): { lines: string[]; exitCode: number } => {
+    const snapshot = liveTargets();
+    if (observationFailed(snapshot)) {
+      return { lines: ["tmux could not be probed; nothing was changed"], exitCode: 1 };
+    }
+
+    const windows = projectWindows(session, project.id);
+    if (windows === null) {
+      return { lines: ["tmux could not be probed; nothing was changed"], exitCode: 1 };
+    }
+    if (!windows.project) {
+      return { lines: ["this project has no window yet; run hive first"], exitCode: 1 };
+    }
+
+    const lead = db
+      .prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id LIMIT 1")
+      .get(project.id, LEAD_KIND) as RowPaneIdentity | undefined;
+    if (!lead || rowOwnership(lead, snapshot) !== "live") {
+      return { lines: ["the lead pane could not be verified; nothing was changed"], exitCode: 1 };
+    }
+    const leadWindow = paneWindow(lead.tmux_target);
+    if (!leadWindow || leadWindow.split(":")[1] !== windows.project.split(":")[1]) {
+      return {
+        lines: [`the lead pane is not in this project's window (${leadWindow ?? "unknown"} vs ${windows.project}); nothing was changed`],
+        exitCode: 1,
+      };
+    }
+
+    const ownedWindows = listOwnedWindows(session);
+    const workers = db
+      .prepare(
+        "SELECT id, name, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = 'agent' AND status = 'running' ORDER BY id",
+      )
+      .all(project.id) as (RowPaneIdentity & { id: number; name: string })[];
+    const moved: { name: string; pane: string }[] = [];
+    const sourceWindows = new Set<string>();
+
+    for (const worker of workers) {
+      if (rowOwnership(worker, snapshot) !== "live") continue;
+      const source = paneWindow(worker.tmux_target);
+      if (!source || source.split(":")[1] === windows.project.split(":")[1]) continue;
+      const sourceId = source.split(":")[1];
+      const stamped = ownedWindows.find((window) => window.window.split(":")[1] === sourceId);
+      if (
+        stamped &&
+        ((stamped.projectId !== "" && Number(stamped.projectId) !== project.id) ||
+          (stamped.processesOf !== "" && Number(stamped.processesOf) !== project.id))
+      ) {
+        continue;
+      }
+
+      tmux("join-pane", "-d", "-s", worker.tmux_target, "-t", windows.project);
+      sourceWindows.add(source);
+      moved.push({ name: worker.name, pane: worker.tmux_target });
+    }
+
+    const leadPanes = tmux("list-panes", "-t", windows.project, "-F", "#{pane_id}").split("\n").filter(Boolean);
+    if (leadPanes[0] !== lead.tmux_target) {
+      tmux("swap-pane", "-s", lead.tmux_target, "-t", leadPanes[0]);
+    }
+    applyLayout(windows.project, layout);
+    const layoutApplied = windowLayout(windows.project) === layout;
+
+    const projectRunningRows = db
+      .prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' AND tmux_target != ''")
+      .all(project.id) as RowPaneIdentity[];
+    const projectRunningTargets = new Set(
+      projectRunningRows.filter((row) => rowOwnership(row, snapshot) === "live").map((row) => row.tmux_target),
+    );
+    const leftWindows: string[] = [];
+    for (const source of sourceWindows) {
+      let remaining: string[];
+      try {
+        remaining = tmux("list-panes", "-t", source, "-F", "#{pane_id}").split("\n").filter(Boolean);
+      } catch (error) {
+        if (tmuxSaysNothingThere(error)) continue;
+        throw error;
+      }
+      if (remaining.some((pane) => !projectRunningTargets.has(pane))) leftWindows.push(source);
+    }
+
+    const lines = moved.map(({ name, pane }) => `moved ${name} pane ${pane} into ${windows.project}`);
+    if (leftWindows.length > 0) lines.push(`left windows with panes remaining: ${leftWindows.join(", ")}`);
+    if (moved.length === 0) lines.push("nothing to move");
+    if (!layoutApplied) {
+      lines.push(`layout ${layout} could not be applied; ${moved.length > 0 ? "panes were moved" : "no panes were moved"}`);
+      return { lines, exitCode: 1 };
+    }
+    lines.push(`moved ${moved.length} pane${moved.length === 1 ? "" : "s"} into ${windows.project}; layout ${layout}`);
+    return { lines, exitCode: 0 };
+  });
+
+  console.log(result.lines.join("\n"));
+  process.exitCode = result.exitCode;
+}
+
 const LEAD_OWNERSHIP_LABEL: Record<RowOwnership, string> = {
   live: "running",
   gone: "no live pane",
   reissued: "no live pane",
   unknown: "pane identity unknown",
 };
+
+function leadStatusLabel(row: { id: number; pane_pid: string }, ownership: RowOwnership): string {
+  const ended = leadSessionEnded(row, ownership);
+  return ended ? `dormant (session ended ${formatLocal(ended.ended_at)})` : LEAD_OWNERSHIP_LABEL[ownership];
+}
 
 function cmdStatus(): void {
   janitor();
@@ -2077,6 +2240,7 @@ function cmdStatus(): void {
     const agents = db
       .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY kind DESC, id")
       .all(project.id) as (ProvenanceRow & {
+      id: number;
       kind: string;
       name: string;
       tmux_target: string;
@@ -2084,21 +2248,18 @@ function cmdStatus(): void {
       pane_pid: string;
       cwd: string;
     })[];
-
     const todos = (
       db
         .prepare(
-          "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress') AND archived_at IS NULL",
+          `SELECT COUNT(*) AS n FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}`,
         )
         .get(project.id) as { n: number }
     ).n;
-
     const { wakes, heldWakes } = db
       .prepare(
         `SELECT COUNT(*) AS wakes, COUNT(held_at) AS heldWakes FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`,
       )
       .get(project.id) as { wakes: number; heldWakes: number };
-
     const parked = db
       .prepare(
         "SELECT id, name, parked_at, parked_branch, cwd FROM agents " +
@@ -2124,7 +2285,7 @@ function cmdStatus(): void {
         a.kind === "agent"
           ? describeForHuman(deriveProvenance(a, null))
           : a.kind === LEAD_KIND
-            ? LEAD_OWNERSHIP_LABEL[rowOwnership(a, statusSnapshot())]
+            ? leadStatusLabel(a, rowOwnership(a, statusSnapshot()))
             : (whereIs.get(a.name) ?? "running");
 
       const label = a.kind === "command" ? "cmd  " : a.kind === LEAD_KIND ? "lead " : "agent";
@@ -2147,13 +2308,11 @@ function cmdStatus(): void {
   }
   if (!anyOutput) console.log("Nothing running and no open work in any project.");
 }
-
 const report = (level: string, label: string, lines: string[]) => {
   console.log(`  ${level}  ${label}: ${lines[0]}`);
   for (const line of lines.slice(1)) console.log(`        ${line}`);
 };
 const info = (label: string, ...lines: string[]) => report("info", label, lines);
-
 let warnings = 0;
 let gatingWarnings = 0;
 const warn = (label: string, ...lines: string[]) => {
@@ -2173,7 +2332,6 @@ type VerboseOnlyCheck = "worker live state";
 const verboseInfo = (_check: VerboseOnlyCheck, label: string, ...lines: string[]) => {
   if (doctorVerbose) report("info", label, lines);
 };
-
 function cmdUpgrade(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--check", "--run"] });
   rejectUnknownFlags("upgrade", parsed, "--check, --run");
@@ -2394,7 +2552,11 @@ function reportDispatcher(): void {
   }
   info("dispatcher", `${dispatcher.file} -> ${dispatcher.node ?? "an exec line hive cannot parse"}`);
   if (!dispatcher.node || !dispatcher.cli) {
-    gatingWarn("dispatcher", "written by another version of hive; re-run `hive setup` to refresh it.");
+    gatingWarn(
+      "dispatcher",
+      "written by another version of hive; use this re-pin command to refresh it:",
+      `  ${repinCommand(process.execPath, cliPath())}`,
+    );
   } else if (!existsSync(dispatcher.node)) {
 
     const need = requiredNodeApi();
@@ -2435,7 +2597,7 @@ function reportDispatcher(): void {
       "dispatcher",
       "pinned to a different build than this CLI is running.",
       `this run: ${process.execPath} ${cliPath()}`,
-      "Re-pin after a rebuild: npm run build && hive setup",
+      `Re-pin after a rebuild: ${repinCommand(process.execPath, cliPath())}`,
     );
   }
   if (onPath !== dispatcher.file) gatingWarn("dispatcher", ...pathAdvice(dispatcherDir(), dispatcher.file));
@@ -2566,8 +2728,12 @@ function reportPtyHeadroom(orphans: OrphanScratchServers | null): void {
     shellsLine,
     `${scratchHeld} orphaned scratch tmux server(s) still holding a socket (detail in the scratch tmux servers check)`,
     `${livePanes} pane(s) recorded 'running' in hive's own store (leads and workers, this machine)`,
-    "reap the orphaned shells and scratch servers with `node scripts/sweep-scratch.mjs` (dry run by default, " +
-      "`--kill` to act)",
+    ...(existsSync(join(dirname(cliPath()), "..", "scripts", "sweep-scratch.mjs"))
+      ? [
+          "reap the orphaned shells and scratch servers with `node scripts/sweep-scratch.mjs` (dry run by default, " +
+            "`--kill` to act)",
+        ]
+      : []),
   );
 }
 
@@ -2937,15 +3103,12 @@ function reportEffectiveConfig(loaded: ResolvedHiveConfig): void {
 }
 
 function cmdDoctor(argv: string[]): void {
-  const strict = argv.includes("--strict");
-  doctorVerbose = argv.includes("--verbose");
-  const KNOWN_DOCTOR_FLAGS = new Set(["--strict", "--verbose"]);
-  const unknown = argv.find((a) => !KNOWN_DOCTOR_FLAGS.has(a));
-  if (unknown !== undefined) {
-
-    console.error(`hive doctor: unknown argument "${unknown}". Flags are --strict and --verbose.`);
-    process.exit(1);
-  }
+  const parsed = parseArgs(argv, { flags: ["--strict", "--verbose"] });
+  const unexpected = argv.find((arg) => arg !== "--strict" && arg !== "--verbose");
+  if (unexpected !== undefined) parsed.unknown = [unexpected];
+  rejectUnknownFlags("doctor", parsed, "--strict and --verbose");
+  const strict = parsed.flags.has("--strict");
+  doctorVerbose = parsed.flags.has("--verbose");
   reportMigrationResult(migrateLegacyConfig());
   let failures = 0;
 
@@ -2980,11 +3143,35 @@ function cmdDoctor(argv: string[]): void {
   });
 
   check("tmux", () => {
-    const version = execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim();
+    let version: string;
+    try {
+      version = execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(TMUX_NOT_INSTALLED_MESSAGE);
+      throw e;
+    }
 
     const override = tmuxTimeoutOverride();
     return override === null ? version : `${version} (HIVE_TMUX_TIMEOUT_MS=${override}ms override; testing only)`;
   });
+  try {
+    const serverEnv = tmux("show-environment", "-g", "NO_COLOR");
+    if (serverEnv.startsWith("NO_COLOR=")) {
+      warn(
+        "tmux NO_COLOR",
+        "Claude Code drops the dim styling on placeholders and suggestions, so hive reads them as typed input; agent_send refuses and wakes hold.",
+        "clear it with `tmux set-environment -g -u NO_COLOR`, then restart affected workers",
+      );
+    }
+  } catch (e) {
+    if (!tmuxNotInstalled(e) && tmuxSaysNothingThere(e) && process.env.NO_COLOR !== undefined) {
+      warn(
+        "tmux NO_COLOR",
+        "NO_COLOR is set in this shell; a tmux server started here would pass it to every worker, causing Claude Code placeholders and suggestions to read as typed input; agent_send refuses and wakes hold.",
+        "unset NO_COLOR before starting tmux, or clear it with `tmux set-environment -g -u NO_COLOR` on a running server, then restart affected workers",
+      );
+    }
+  }
   const orphans = orphanScratchServers();
   reportPtyHeadroom(orphans);
   reportOrphanTmuxServers(orphans);
@@ -3000,7 +3187,7 @@ function cmdDoctor(argv: string[]): void {
   for (const executable of required) {
     check(executable, () => {
       const path = executableOnPath(executable, here?.path ?? process.cwd());
-      if (!path) throw new Error(`not found or not executable; install ${executable} or change lead/agents in hive.yml`);
+      if (!path) throw new Error(`${executable === "claude" ? "Claude Code is not installed or not on PATH. Install it from https://claude.com/claude-code, then run hive doctor again. " : ""}not found or not executable; install ${executable} or change lead/agents in hive.yml`);
       return path;
     });
   }
@@ -3026,6 +3213,25 @@ function cmdDoctor(argv: string[]): void {
       );
     }
     return `${dataDir} (schema v${n})`;
+  });
+  check("stale hive servers", () => {
+    const { applied_at: appliedAt } = db.prepare("SELECT MAX(applied_at) AS applied_at FROM migrations").get() as {
+      applied_at: string | null;
+    };
+    const result = staleHiveServers(appliedAt, dataDir);
+    if ("skipped" in result) {
+      info("stale hive servers", `check skipped: ${result.skipped}`);
+      return "check skipped";
+    }
+    for (const server of result.servers) {
+      warn(
+        "stale hive server",
+        `pid ${server.pid} started ${server.startedAt} (parent pid ${server.ppid}: ${server.parentCommand ?? "unknown"})`,
+        `command: ${server.command}`,
+        "restart that session to load the current build",
+      );
+    }
+    return `${result.servers.length} stale server${result.servers.length === 1 ? "" : "s"}`;
   });
   check("hooks file", () => ensureHooksFile());
 
@@ -3526,11 +3732,11 @@ function cmdStatusline(): void {
   );
 
   const todos = count(
-    "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress') AND archived_at IS NULL",
+    `SELECT COUNT(*) AS n FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}`,
   );
   const ready = count(
     `SELECT COUNT(*) AS n FROM todos t
-     WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL
+     WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
        AND NOT EXISTS (${OPEN_BLOCKERS_SQL})`,
   );
   const pads = count("SELECT COUNT(*) AS n FROM pads WHERE project_id = ? AND archived = 0");
@@ -3543,13 +3749,13 @@ function cmdStatusline(): void {
     .prepare(
       `WITH chosen AS (
          SELECT held_reason, first_held_at FROM wakes
-          WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL
+          WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND ${heldWakeWhere()}
           ORDER BY (held_reason LIKE ?) DESC, (held_reason LIKE ?) ASC,
                    first_held_at IS NULL ASC, first_held_at ASC
           LIMIT 1
        )
        SELECT
-         (SELECT COUNT(*) FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL) AS n,
+         (SELECT COUNT(*) FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND ${heldWakeWhere()}) AS n,
          (SELECT held_reason FROM chosen) AS held_reason,
          (SELECT first_held_at FROM chosen) AS first_held_at`,
     )
@@ -3581,13 +3787,15 @@ function cmdStatusline(): void {
   if (schemaAhead) parts.push("store ahead (update hive)");
   let turns: number | null = null;
   let budget: { warn: number; stop: number } | null = null;
+  let handoff: string | null = null;
   try {
     const actorId = process.env.HIVE_AGENT_ID;
     if (actorId) {
       const lead = db.prepare(
-        "SELECT 1 AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
+        "SELECT id AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
       ).get(project.id, actorId) as { lead: number } | undefined;
       if (lead) {
+        handoff = handoffStatusSegment(lead.lead);
         let inputPath = "";
         if (!process.stdin.isTTY) {
           try {
@@ -3605,25 +3813,8 @@ function cmdStatusline(): void {
     const color = budget === null ? "" : turns >= budget.stop ? "\x1b[31m" : turns >= budget.warn ? "\x1b[33m" : "";
     parts.push(`${color}turns ${turns}${color ? "\x1b[0m" : ""}`);
   }
+  if (handoff !== null) parts.push(handoff);
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
-}
-
-// test/docs.test.mjs fails if a label here is missing from docs/install.md. It checks
-// presence only: docs/install.md also counts the set in prose, and nothing guards that number.
-export const HELD_REASON_LABELS = ["typing", "talking", "needs you", "blocked"] as const;
-
-export function heldReasonLabel(heldReason: string | null): (typeof HELD_REASON_LABELS)[number] {
-  if (isUnsubmittedInputHold(heldReason)) return "typing";
-  if (
-    heldReason === HELD_REASON_LEAD_PANE_DEAD ||
-    wasHeldForPaneIdentity(heldReason) ||
-    isLeadRowClosedHold(heldReason) ||
-    isUnclassifiablePaneHold(heldReason)
-  ) {
-    return "needs you";
-  }
-  if (heldReason === HELD_REASON_CONVERSATION) return "talking";
-  return "blocked";
 }
 
 function padSlug(name: string): string {
@@ -3651,24 +3842,25 @@ function canonicalPath(path: string): string {
 function nextCandidates(): PortfolioProject[] {
   const queenRoot = canonicalPath(join(storeDir(), "queen"));
   const byCount = (a: number, b: number) => b - a;
+  const waitsOnYou = (p: PortfolioProject) => p.needs_human + p.questions_pending;
   return collectPortfolio()
     .projects.filter(
       (p) =>
-        (p.lane === "waiting_on_you" || p.lane === "stuck" || (p.lane === "moving" && p.needs_human > 0)) &&
+        (p.lane === "waiting_on_you" || p.lane === "stuck" || (p.lane === "moving" && waitsOnYou(p) > 0)) &&
         canonicalPath(p.root) !== queenRoot,
     )
     .sort((a, b) => {
-      const tier = (p: PortfolioProject) => (p.lane === "waiting_on_you" ? 0 : p.needs_human > 0 ? 1 : 2);
+      const tier = (p: PortfolioProject) => (p.lane === "waiting_on_you" ? 0 : waitsOnYou(p) > 0 ? 1 : 2);
       if (tier(a) !== tier(b)) return tier(a) - tier(b);
       if (a.lane === "waiting_on_you") {
         return (
-          byCount(a.needs_human, b.needs_human) ||
+          byCount(waitsOnYou(a), waitsOnYou(b)) ||
           a.last_activity_at.localeCompare(b.last_activity_at) ||
           a.id - b.id
         );
       }
       return (
-        byCount(a.needs_human, b.needs_human) ||
+        byCount(waitsOnYou(a), waitsOnYou(b)) ||
         byCount(a.todos.blocked_in_progress, b.todos.blocked_in_progress) ||
         byCount(a.wakes.overdue, b.wakes.overdue) ||
         byCount(a.workers.needs_input, b.workers.needs_input) ||
@@ -3753,13 +3945,181 @@ function cmdQueenAudit(argv: string[]): void {
     return;
   }
   if (report.entries.length === 0) {
-    console.log("No queen actions recorded.");
+    console.log("No queen audit entries recorded.");
     return;
   }
   for (const entry of report.entries) {
     console.log(`${entry.created_at} UTC  ${entry.actor_id} -> target #${entry.target_project_id}\n` +
       `  ${entry.operation}  ${entry.resource_type} #${entry.resource_id}\n  ${entry.summary}`);
   }
+}
+
+function cmdCrew(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("crew", parsed, "--json");
+  if (!parsed.flags.has("--json")) {
+    console.error("hive crew: usage: hive crew --json. It prints one JSON snapshot of this project's workers, todos and wakes.");
+    process.exit(1);
+  }
+  const problem = crewStoreProblem();
+  if (problem) {
+    console.error(`hive crew: ${problem}. Run any other hive command once (for example hive status) to migrate it, then retry.`);
+    process.exit(1);
+  }
+  let project: Project | null;
+  try {
+    project = pinnedOrCwdProject();
+  } catch (e) {
+    console.error(`hive crew: ${errorMessage(e)}`);
+    process.exit(1);
+  }
+  if (!project) {
+    console.error("hive crew: this directory is not a registered hive project. cd to a registered checkout, or run `hive init` here to register it.");
+    process.exit(1);
+  }
+  console.log(JSON.stringify(collectCrew(project, new Date())));
+}
+
+async function cmdCrewRestore(argv: string[]): Promise<void> {
+  const parsed = parseArgs(argv, { flags: ["--dry-run", "--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("crew-restore", parsed, "--dry-run and --json");
+  const dryRun = parsed.flags.has("--dry-run");
+  let project: Project | null;
+  try {
+    project = pinnedOrCwdProject();
+  } catch (e) {
+    console.error(`hive crew-restore: ${errorMessage(e)}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!project) {
+    console.error("hive crew-restore: this directory is not a registered hive project.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const snapshot = liveTargets();
+  const workers = db
+    .prepare("SELECT * FROM agents WHERE project_id = ? AND kind = 'agent' ORDER BY id")
+    .all(project.id) as AgentRow[];
+  const candidates = workers.filter((worker) => {
+    if (worker.parked_at) return false;
+    if (worker.status === "closed") return worker.recovery_state === "pending";
+    return worker.status === "running";
+  });
+  const notConsidered = workers.length - candidates.length;
+  const rows: {
+    agent_id: number;
+    name: string;
+    outcome: "restored" | "would_restore" | "skipped" | "failed";
+    reason?: string;
+    tmux_target?: string;
+  }[] = [];
+
+  for (const initial of candidates) {
+    let candidate = initial;
+    if (candidate.status === "running") {
+      if (!candidate.tmux_target) {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "resume is already in flight or was interrupted before pane publication; inspect manually" });
+        continue;
+      }
+      const ownership = rowOwnership(candidate, snapshot);
+      if (ownership === "live") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the recorded pane is still live" });
+        continue;
+      }
+      if (ownership === "unknown") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: snapshot === null ? "tmux ownership could not be checked" : "pane ownership is unknown" });
+        continue;
+      }
+      if (ownership !== "gone" && ownership !== "reissued") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the row changed while it was inspected" });
+        continue;
+      }
+      if (!dryRun) {
+        const expected = {
+          tmux_target: candidate.tmux_target,
+          tmux_socket: candidate.tmux_socket,
+          pane_pid: candidate.pane_pid,
+        };
+        if (!markWorkerLost(candidate.id, expected)) {
+          const latest = db.prepare("SELECT * FROM agents WHERE id = ? AND project_id = ?").get(candidate.id, project.id) as AgentRow | undefined;
+          if (!latest || latest.status !== "closed" || latest.recovery_state !== "pending") {
+            rows.push({ agent_id: initial.id, name: initial.name, outcome: "skipped", reason: "the row changed before crash recovery could be claimed" });
+            continue;
+          }
+          candidate = latest;
+        } else {
+          const latest = db.prepare("SELECT * FROM agents WHERE id = ? AND project_id = ?").get(candidate.id, project.id) as AgentRow | undefined;
+          if (!latest) {
+            rows.push({ agent_id: initial.id, name: initial.name, outcome: "skipped", reason: "the row was removed during crash recovery" });
+            continue;
+          }
+          candidate = latest;
+        }
+      } else {
+        candidate = { ...candidate, status: "closed", recovery_state: "pending" };
+      }
+    }
+
+    if (candidate.parked_at) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "parked workers are not crash recoveries" });
+      continue;
+    }
+    if (candidate.status !== "closed" || candidate.recovery_state !== "pending") {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "row is not marked for crash recovery" });
+      continue;
+    }
+
+    const validation = validateResumeWorker(project, candidate, {
+      parentActor: candidate.parent_actor_id,
+      recoveryOnly: true,
+    });
+    candidate = validation.agent;
+    if (validation.stateProblem) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the row changed before recovery validation" });
+      continue;
+    }
+    if (validation.blocker) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: dryRun ? "skipped" : "failed", reason: validation.blocker });
+      continue;
+    }
+    if (dryRun) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "would_restore" });
+      continue;
+    }
+
+    try {
+      const receipt = await resumeWorker(project.id, candidate.id, {
+        parentActor: candidate.parent_actor_id!,
+        recoveryOnly: true,
+      });
+      rows.push({ agent_id: receipt.agent_id, name: receipt.name, outcome: "restored", tmux_target: receipt.tmux_target });
+    } catch (e) {
+      const latest = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ? AND project_id = ?").get(candidate.id, project.id) as { status: string; recovery_state: string } | undefined;
+      if (latest?.status !== "closed" || latest.recovery_state !== "pending") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the row changed before the guarded recovery claim" });
+      } else {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "failed", reason: errorMessage(e) });
+      }
+    }
+  }
+
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify({ project_id: project.id, dry_run: dryRun, rows, not_considered: notConsidered }));
+  } else {
+    const counts = { restored: 0, would_restore: 0, skipped: 0, failed: 0 };
+    for (const row of rows) {
+      counts[row.outcome]++;
+      const target = row.tmux_target ? ` ${row.tmux_target}` : "";
+      const reason = row.reason ? `: ${row.reason}` : "";
+      console.log(`${row.outcome.padEnd(13)} agent ${row.agent_id} ${row.name}${target}${reason}`);
+    }
+    console.log(`crew-restore: ${counts.restored} restored, ${counts.would_restore} would restore, ${counts.skipped} skipped, ${counts.failed} failed, ${notConsidered} not considered`);
+  }
+  if (rows.some((row) => row.outcome === "failed")) process.exitCode = 1;
 }
 
 function cmdPortfolio(argv: string[]): void {
@@ -3784,7 +4144,7 @@ function cmdPortfolio(argv: string[]): void {
         `  lead ${leadText(p)}; workers ${w.working} working, ${w.idle} idle, ${w.needs_input} needs input, ` +
         `${w.other} other, ${w.unreachable} unreachable, ${w.unconfirmed} unconfirmed\n` +
         `  todos ${t.open} open, ${t.in_progress} in progress, ${t.blocked} blocked, ${t.high} high; ` +
-        `needs human ${p.needs_human}; wakes ${p.wakes.pending} pending, ${p.wakes.overdue} overdue\n` +
+        `needs human ${p.needs_human}; questions ${p.questions_pending} pending; wakes ${p.wakes.pending} pending, ${p.wakes.overdue} overdue\n` +
         `  last activity ${p.last_activity_at} UTC`,
     );
   }
@@ -4048,13 +4408,26 @@ function requireFlagValues(command: string, parsed: ParsedArgs): void {
 }
 
 function cmdTodos(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--all"], valued: ["--status", "--tag"] });
+  for (const flag of ["--status", "--tag"] as const) {
+    const index = argv.indexOf(flag);
+    const value = index === -1 ? undefined : argv[index + 1];
+    if (index === -1 || (value !== undefined && !value.startsWith("--"))) continue;
+    if (flag === "--status") {
+      console.log(`Usage: hive todos --status <s>  where <s> is one of: ${TODO_STATUSES.join(", ")}`);
+    } else {
+      console.log("Usage: hive todos --tag <t>");
+    }
+    process.exit(1);
+  }
+  rejectUnknownFlags("todos", parsed, "--all, --status <status>, --tag <tag>");
+  requireFlagValues("todos", parsed);
   const project = resolveProjectForRead("todos");
 
-  const all = argv.includes("--all");
-  const statusIdx = argv.indexOf("--status");
-  const status = flagValue(argv, "--status");
+  const all = parsed.flags.has("--all");
+  const status = parsed.values.get("--status");
 
-  if (statusIdx !== -1 && (status === undefined || status.startsWith("--"))) {
+  if (parsed.values.has("--status") && status === undefined) {
     console.log(`Usage: hive todos --status <s>  where <s> is one of: ${TODO_STATUSES.join(", ")}`);
     process.exit(1);
   }
@@ -4062,10 +4435,9 @@ function cmdTodos(argv: string[]): void {
     console.log(`Unknown status "${status}". Valid: ${TODO_STATUSES.join(", ")}`);
     process.exit(1);
   }
-  const tagIdx = argv.indexOf("--tag");
-  const tag = flagValue(argv, "--tag");
+  const tag = parsed.values.get("--tag");
 
-  if (tagIdx !== -1 && (tag === undefined || tag.startsWith("--"))) {
+  if (parsed.values.has("--tag") && tag === undefined) {
     console.log("Usage: hive todos --tag <t>");
     process.exit(1);
   }
@@ -4111,9 +4483,11 @@ function cmdTodos(argv: string[]): void {
 }
 
 function cmdTodo(argv: string[]): void {
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("todo", parsed, "none");
   const project = resolveProjectForRead("todo");
 
-  const id = Number(argv.find((a) => !a.startsWith("--")));
+  const id = Number(parsed.positional[0]);
   if (!Number.isInteger(id)) {
     console.log("Usage: hive todo <id>  (run inside the project)");
     process.exit(1);
@@ -4155,6 +4529,69 @@ function cmdTodo(argv: string[]): void {
   }
 }
 
+function cmdQuestions(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("questions", parsed, "--json");
+  const project = resolveProjectForRead("questions");
+  const questions = listQuestions(project.id);
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify({ questions }));
+    return;
+  }
+  if (questions.length === 0) {
+    console.log("No pending or defaulted questions.");
+    return;
+  }
+  for (const q of questions) {
+    console.log(`#${q.id} [${q.state}] ${q.header}`);
+    console.log(`Question: ${q.question}`);
+    console.log(`Default: ${q.default_answer}`);
+    if (q.options) {
+      console.log("Options:");
+      for (const option of q.options) {
+        console.log(`  ${option.label}${option.recommended ? " (Recommended)" : ""}: ${option.description}`);
+      }
+    }
+  }
+}
+
+function cmdAnswer(argv: string[]): void {
+  const endOfFlags = argv.indexOf("--");
+  const optionArgs = endOfFlags === -1 ? argv : argv.slice(0, endOfFlags);
+  if (optionArgs.filter((arg) => arg === "--notes").length > 1) {
+    console.error("hive answer: --notes may be passed only once.");
+    process.exit(1);
+  }
+  const parsed = parseArgs(argv, { valued: ["--notes"] });
+  rejectUnknownFlags("answer", parsed, "--notes <text>");
+  requireFlagValues("answer", parsed);
+  if (parsed.values.has("--notes") && parsed.values.get("--notes") === undefined) {
+    console.error("hive answer: --notes requires a value.");
+    process.exit(1);
+  }
+  if (parsed.positional.length !== 2) {
+    console.error("hive answer: usage: hive answer <positive id> <one answer argument> [--notes <text>]");
+    process.exit(1);
+  }
+  const [rawId, answer] = parsed.positional;
+  if (!/^\d+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    console.error(`hive answer: question id must be a positive safe integer, got ${JSON.stringify(rawId)}.`);
+    process.exit(1);
+  }
+  const project = resolveProjectForRead("answer");
+  const id = Number(rawId);
+  const receipt = answerQuestion(project.id, currentActor(), id, answer, parsed.values.get("--notes"));
+  console.log(`Question #${receipt.question_id} answered.`);
+  if (receipt.wake_id === null) {
+    console.log(`No wake queued: ${receipt.wake_skipped ?? "the asking session could not be reached"}.`);
+  } else if (receipt.wake_rerouted_to) {
+    console.log(`Wake #${receipt.wake_id} queued for ${receipt.wake_rerouted_to}; the asker is not running.`);
+  } else {
+    console.log(`Wake #${receipt.wake_id} queued for the asking session.`);
+  }
+}
+
 function cmdPads(): void {
   const project = resolveProjectForRead("pads");
   const pads = listActivePads(project.id);
@@ -4171,8 +4608,28 @@ function cmdPads(): void {
 }
 
 function cmdPad(argv: string[]): void {
-  const parsed = parseArgs(argv, { flags: ["--edit", "--save"] });
-  rejectUnknownFlags("pad", parsed, "--edit and --save");
+  const parsed = parseArgs(argv, { flags: ["--edit", "--export", "--save"], valued: ["--revision"] });
+  rejectUnknownFlags("pad", parsed, "--edit, --export, --save and --revision <n>");
+  requireFlagValues("pad", parsed);
+
+  const modes = ["--edit", "--export", "--save"].filter((flag) => parsed.flags.has(flag));
+  if (modes.length > 1) {
+    console.log("Choose only one of --edit, --export or --save.");
+    process.exit(1);
+  }
+  const revisionArg = parsed.values.get("--revision");
+  let requestedRevision: number | undefined;
+  if (revisionArg !== undefined) {
+    if (!/^\d+$/.test(revisionArg) || !Number.isSafeInteger(Number(revisionArg)) || Number(revisionArg) < 1) {
+      console.log("--revision must be a positive integer.");
+      process.exit(1);
+    }
+    requestedRevision = Number(revisionArg);
+  }
+  if (requestedRevision !== undefined && !parsed.flags.has("--save")) {
+    console.log("--revision can only be used with --save.");
+    process.exit(1);
+  }
 
   const name = parsed.positional[0];
   if (!name) {
@@ -4186,7 +4643,7 @@ function cmdPad(argv: string[]): void {
     process.exit(1);
   }
 
-  if (parsed.flags.has("--edit")) {
+  const writeExport = (): string => {
     const existing = findPadExports(project.id, name);
     if (existing.length > 0) {
       console.log(`An unsaved export already exists:\n  ${existing.join("\n  ")}`);
@@ -4195,7 +4652,6 @@ function cmdPad(argv: string[]): void {
     }
     const file = join(tmpdir(), `${padExportPrefix(project.id, name)}${pad.revision}.md`);
     try {
-
       writeFileSync(file, pad.content, { flag: "wx", mode: 0o600 });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "EEXIST") {
@@ -4204,13 +4660,24 @@ function cmdPad(argv: string[]): void {
       }
       throw e;
     }
+    return file;
+  };
+  const isOwnExport = (file: string): boolean => {
+    const filename = basename(file);
+    const prefix = padExportPrefix(project.id, name);
+    return dirname(resolve(file)) === resolve(tmpdir()) && filename.startsWith(prefix) && /^\d+\.md$/.test(filename.slice(prefix.length));
+  };
 
-    const editor = process.env.HIVE_EDITOR || "open";
-    const [cmd, ...cmdArgs] = editor.split(/\s+/);
-    spawn(cmd, [...cmdArgs, file], { detached: true, stdio: "ignore" }).unref();
+  if (parsed.flags.has("--edit") || parsed.flags.has("--export")) {
+    const file = writeExport();
     console.log(file);
-    console.log(`Opened "${name}" (rev ${pad.revision}) with ${cmd}. After saving your edits, write back with:`);
-    console.log(`  hive pad "${name}" --save`);
+    if (parsed.flags.has("--edit")) {
+      const editor = process.env.HIVE_EDITOR || "open";
+      const [cmd, ...cmdArgs] = editor.split(/\s+/);
+      spawn(cmd, [...cmdArgs, file], { detached: true, stdio: "ignore" }).unref();
+      console.log(`Opened "${name}" (rev ${pad.revision}) with ${cmd}. After saving your edits, write back with:`);
+      console.log(`  hive pad "${name}" --save`);
+    }
     return;
   }
 
@@ -4230,21 +4697,41 @@ function cmdPad(argv: string[]): void {
     }
     const content = readFileSync(file, "utf8");
     const marker = /\.r(\d+)\.md$/.exec(file);
-    const expected = marker ? Number(marker[1]) : pad.revision;
+    const expected = requestedRevision ?? (marker ? Number(marker[1]) : undefined);
+    if (expected === undefined) {
+      console.log(`This file has no revision marker. Current revision is ${pad.revision}; save with: hive pad "${name}" --save ${shellQuote(file)} --revision ${pad.revision}`);
+      process.exit(1);
+    }
+    if (expected !== pad.revision) {
+      console.log(`Revision mismatch: expected ${expected}, current revision is ${pad.revision}.`);
+      console.log(`Your edits are untouched in ${file}.`);
+      console.log(`Someone changed the pad since the export. Compare with: hive pad "${name}"`);
+      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${shellQuote(file)} --revision ${pad.revision}`);
+      process.exit(1);
+    }
     if (content === pad.content) {
-      unlinkSync(file);
-      console.log(`No changes; "${name}" left at rev ${pad.revision}. Removed ${file}.`);
+      if (isOwnExport(file)) {
+        unlinkSync(file);
+        console.log(`No changes; "${name}" left at rev ${pad.revision}. Removed ${file}.`);
+      } else {
+        console.log(`No changes; "${name}" left at rev ${pad.revision} (kept ${file}).`);
+      }
       return;
     }
     try {
       const newRevision = overwritePadContent(project.id, pad.id, content, expected);
-      unlinkSync(file);
-      console.log(`Saved "${name}": rev ${expected} -> ${newRevision}. Removed ${file}.`);
+      if (isOwnExport(file)) {
+        unlinkSync(file);
+        console.log(`Saved "${name}": rev ${expected} -> ${newRevision}. Removed ${file}.`);
+      } else {
+        console.log(`Saved "${name}": rev ${expected} -> ${newRevision} (kept ${file}).`);
+      }
     } catch (e) {
       console.log(errorMessage(e));
       console.log(`Your edits are untouched in ${file}.`);
       console.log(`Someone changed the pad since the export. Compare with: hive pad "${name}"`);
-      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${file}`);
+      const currentRevision = getActivePadByName(project.id, name)?.revision ?? pad.revision;
+      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${shellQuote(file)} --revision ${currentRevision}`);
       process.exit(1);
     }
     return;
@@ -4254,7 +4741,7 @@ function cmdPad(argv: string[]): void {
 }
 
 process.stdout.on("error", (error: NodeJS.ErrnoException) => {
-  if (error.code === "EPIPE") process.exit(0);
+  if (error.code === "EPIPE" || error.code === "ENOTCONN") process.exit(0);
   throw error;
 });
 
@@ -4263,6 +4750,8 @@ let command = args[0] ?? "lead";
 let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
 if (command === "--version" || command === "-v") {
+  const parsed = parseArgs(rest, { flags: ["--check"] });
+  rejectUnknownFlags("version", parsed, "--check");
   const { line, drift } = versionInfo();
   console.log(line);
   if (drift) console.log(`! ${drift}`);
@@ -4276,9 +4765,12 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "layout", "status", "portfolio", "crew", "crew-restore", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
-  "pads", "pad", "todos", "todo", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
+  LEAD_HANDOFF_GRACE_VERB,
+  LEAD_HANDOFF_START_VERB,
+  "lead-handoff",
+  "pads", "pad", "todos", "todo", "questions", "answer", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
 
@@ -4292,7 +4784,7 @@ if (!COMMANDS.includes(command)) {
     usage();
   }
 }
-if (command !== "upgrade") migrate();
+if (command !== "upgrade" && command !== "crew") migrate();
 
 try {
   switch (command) {
@@ -4317,17 +4809,36 @@ try {
     case LEAD_PANE_EXITED_VERB:
       cmdLeadPaneExited(rest);
       break;
+    case "lead-handoff":
+      process.exitCode = await cmdLeadHandoff(rest);
+      break;
+    case LEAD_HANDOFF_GRACE_VERB:
+      process.exitCode = await runHandoffGrace(rest);
+      break;
+    case LEAD_HANDOFF_START_VERB:
+      process.exitCode = await runHandoffStart(rest);
+      break;
     case "show":
       cmdShow(rest);
       break;
     case "hide":
       cmdHide(rest);
       break;
+    case "layout":
+      cmdLayout(rest);
+      break;
     case "status":
+      rejectUnknownFlags("status", parseArgs(rest, {}), "none");
       cmdStatus();
       break;
     case "portfolio":
       cmdPortfolio(rest);
+      break;
+    case "crew":
+      cmdCrew(rest);
+      break;
+    case "crew-restore":
+      await cmdCrewRestore(rest);
       break;
     case "queen-audit":
       cmdQueenAudit(rest);
@@ -4345,6 +4856,7 @@ try {
       cmdDoctor(rest);
       break;
     case "pads":
+      rejectUnknownFlags("pads", parseArgs(rest, {}), "none");
       cmdPads();
       break;
     case "pad":
@@ -4356,29 +4868,45 @@ try {
     case "todo":
       cmdTodo(rest);
       break;
+    case "questions":
+      cmdQuestions(rest);
+      break;
+    case "answer":
+      cmdAnswer(rest);
+      break;
     case "backups":
+      rejectUnknownFlags("backups", parseArgs(rest, {}), "none");
       cmdBackups();
       break;
     case "restore":
       await cmdRestore(rest);
       break;
     case "project":
-      await cmdProject(rest);
+      await (rest[0] === "mv" ? import("./projectMove.js").then((move) => move.cmdProjectMove(rest.slice(1))) : cmdProject(rest));
       break;
-    case "runbook":
-      cmdRunbook(rest[0]);
+    case "runbook": {
+      const parsed = parseArgs(rest, {});
+      rejectUnknownFlags("runbook", parsed, "none");
+      cmdRunbook(parsed.positional[0]);
       break;
-    case "posture":
-      cmdPosture(rest[0]);
+    }
+    case "posture": {
+      const parsed = parseArgs(rest, {});
+      rejectUnknownFlags("posture", parsed, "none");
+      cmdPosture(parsed.positional[0]);
       break;
+    }
     case "profile":
       cmdProfile(rest);
       break;
-    case "kickoff":
-
+    case "kickoff": {
+      const parsed = parseArgs(rest, { flags: ["--explain", "--codex"] });
+      rejectUnknownFlags("kickoff", parsed, "--explain, --codex");
       await (await import("./kickoff.js")).runKickoff(rest);
       break;
+    }
     case "statusline":
+      rejectUnknownFlags("statusline", parseArgs(rest, {}), "none");
       cmdStatusline();
       break;
     default:

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 
 import {
+  assertScratchStore,
   fakeFailingTmux,
   isolateTmux,
   McpClient,
@@ -22,6 +23,7 @@ const { hasTmux, cleanup } = isolateTmux("the pane-ownership action tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 
 const OWN_SOCKET = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);

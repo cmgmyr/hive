@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, readFileSync, appendFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdirSync, readdirSync, readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, unlinkSync, statSync, createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import Database from "better-sqlite3";
-import { McpClient, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { CLI, McpClient, baseEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux } = isolateTmux("the CLI tests");
 after(() => cleanupTmux());
@@ -295,5 +297,161 @@ describe("hive CLI pads", () => {
     assert.equal(save.code, 1);
     assert.match(save.stdout, /Revision mismatch/);
     assert.match(readFileSync(file, "utf8"), /human edit/, "edits must survive a failed save");
+  });
+
+  it("pad --export writes the revision-stamped file and opens no editor", async () => {
+    const editor = join(dirs.tmp, "editor-must-not-run");
+    const sentinel = join(dirs.tmp, "editor-was-run");
+    writeFileSync(editor, `#!/bin/sh\ntouch '${sentinel}'\n`);
+    chmodSync(editor, 0o700);
+
+    const result = await runCli(["pad", "board", "--export"], { ...cliOpts, env: { HIVE_EDITOR: editor } });
+    assert.equal(result.code, 0, result.stderr);
+    const file = result.stdout.trim().split("\n")[0];
+    assert.match(file, new RegExp(`/hive-pad-\\d+-board\\.r\\d+\\.md$`));
+    assert.equal(readFileSync(file, "utf8").includes("BOARD"), true);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    for (let attempt = 0; attempt < 25 && !existsSync(sentinel); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(existsSync(sentinel), false, "export must not start HIVE_EDITOR");
+    unlinkSync(file);
+    unlinkSync(editor);
+  });
+
+  it("pad --export refuses when an unsaved export exists", async () => {
+    const first = await runCli(["pad", "board", "--export"], cliOpts);
+    assert.equal(first.code, 0);
+    const file = first.stdout.trim().split("\n")[0];
+    const second = await runCli(["pad", "board", "--export"], cliOpts);
+    assert.equal(second.code, 1);
+    assert.match(second.stdout, /unsaved export already exists/);
+    unlinkSync(file);
+  });
+
+  it("pad --save --revision guards a file with no marker", async () => {
+    const file = join(dirs.tmp, "plain-board.md");
+    writeFileSync(file, "BOARD\nplain edit\n");
+    const save = await runCli(["pad", "board", "--save", file, "--revision", "1"], cliOpts);
+    assert.equal(save.code, 0, save.stdout);
+    assert.match(save.stdout, /rev 1 -> 2/);
+  });
+
+  it("pad --save --revision overrides the filename marker", async () => {
+    const file = join(dirs.tmp, "marked-board.r99.md");
+    writeFileSync(file, "BOARD\nexplicit revision edit\n");
+    const save = await runCli(["pad", "board", "--save", file, "--revision", "2"], cliOpts);
+    assert.equal(save.code, 0, save.stdout);
+    assert.match(save.stdout, /rev 2 -> 3/);
+  });
+
+  it("pad --save refuses an unmarked file without --revision", async () => {
+    const file = join(dirs.tmp, "unmarked board.md");
+    writeFileSync(file, "BOARD\nunsaved edit\n");
+    const save = await runCli(["pad", "board", "--save", file], cliOpts);
+    assert.equal(save.code, 1);
+    assert.match(save.stdout, /no revision marker/);
+    assert.match(save.stdout, /Current revision is 3/);
+    assert.ok(save.stdout.includes(`hive pad "board" --save '${file}' --revision 3`));
+    assert.equal(readFileSync(file, "utf8"), "BOARD\nunsaved edit\n");
+
+    const retry = await runCli(["pad", "board", "--save", file, "--revision", "3"], cliOpts);
+    assert.equal(retry.code, 0, retry.stdout);
+    assert.match(retry.stdout, /rev 3 -> 4/);
+    const pad = await runCli(["pad", "board"], cliOpts);
+    assert.match(pad.stdout, /unsaved edit/);
+  });
+
+  it("pad --save rejects a non-integer --revision before reading the file", async () => {
+    const save = await runCli(["pad", "board", "--save", join(dirs.tmp, "missing.md"), "--revision", "1.5"], cliOpts);
+    assert.equal(save.code, 1);
+    assert.match(save.stdout, /--revision must be a positive integer/);
+    assert.doesNotMatch(save.stdout, /ENOENT/);
+  });
+
+  it("pad --save --revision stale refuses and keeps the file", async () => {
+    const file = join(dirs.tmp, "stale-board.md");
+    writeFileSync(file, "BOARD\nstale edit\n");
+    const save = await runCli(["pad", "board", "--save", file, "--revision", "1"], cliOpts);
+    assert.equal(save.code, 1);
+    assert.match(save.stdout, /Revision mismatch/);
+    assert.equal(readFileSync(file, "utf8"), "BOARD\nstale edit\n");
+    unlinkSync(file);
+  });
+
+  it("pad --save keeps a user file it did not export", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    let pad;
+    try {
+      pad = await mcp.call("pad_read", { name: "board" });
+    } finally {
+      await mcp.close();
+    }
+
+    const file = join(dirs.tmp, "plain.md");
+    const content = `${pad.content}\nUSER FILE EDIT\n`;
+    writeFileSync(file, content);
+    const save = await runCli(["pad", "board", "--save", file, "--revision", String(pad.revision)], cliOpts);
+    assert.equal(save.code, 0, save.stdout);
+    assert.match(save.stdout, /\(kept /);
+    assert.equal(readFileSync(file, "utf8"), content);
+
+    const noChanges = await runCli(["pad", "board", "--save", file, "--revision", String(pad.revision + 1)], cliOpts);
+    assert.equal(noChanges.code, 0, noChanges.stdout);
+    assert.match(noChanges.stdout, /No changes/);
+    assert.match(noChanges.stdout, /\(kept /);
+    assert.equal(readFileSync(file, "utf8"), content);
+    const updated = await runCli(["pad", "board"], cliOpts);
+    assert.match(updated.stdout, /USER FILE EDIT/);
+  });
+
+  it("pad --save prints a current revision after an interleaved write", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    let child;
+    let writer;
+    let fifo;
+    try {
+      const pad = await mcp.call("pad_read", { name: "board" });
+      fifo = join(dirs.tmp, "blocked save.pipe");
+      execFileSync("mkfifo", [fifo]);
+      child = spawn(process.execPath, [CLI, "pad", "board", "--save", fifo, "--revision", String(pad.revision)], {
+        cwd: dirs.projectDir,
+        env: { ...baseEnv(), HIVE_DATA_DIR: dirs.dataDir, HIVE_AUTO_ATTACH: "0", HIVE_EDITOR: "true", TMPDIR: dirs.tmp },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => (stdout += chunk));
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      const closed = once(child, "close");
+      writer = createWriteStream(fifo);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("CLI did not open the save FIFO")), 3000);
+        writer.once("open", () => { clearTimeout(timer); resolve(); });
+        writer.once("error", (error) => { clearTimeout(timer); reject(error); });
+      });
+      await mcp.call("pad_append", { pad_id: pad.pad_id, content: "concurrent writer", expected_revision: pad.revision });
+      writer.end(`${pad.content}\nCLI edit\n`);
+      const [code] = await closed;
+      assert.equal(code, 1, stderr);
+      assert.match(stdout, /Revision mismatch/);
+      assert.ok(stdout.includes(`Then merge into the file and save with: hive pad "board" --save '${fifo}' --revision ${pad.revision + 1}`), stdout);
+      unlinkSync(fifo);
+    } finally {
+      writer?.destroy();
+      if (child && child.exitCode === null) child.kill("SIGTERM");
+      await mcp.close();
+    }
+  });
+
+  it("pad refuses --export combined with --edit or --save", async () => {
+    for (const mode of ["--edit", "--save"]) {
+      const result = await runCli(["pad", "board", "--export", mode], cliOpts);
+      assert.equal(result.code, 1, mode);
+      assert.match(result.stdout, /Choose only one/);
+    }
+    assert.equal(readdirSync(dirs.tmp).filter((file) => /^hive-pad-\d+-board\.r/.test(file)).length, 0);
   });
 });

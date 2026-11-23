@@ -86,3 +86,24 @@ describe("janitor never reaps a RUNNING codex-home", () => {
     assert.equal(existsSync(codexHomeDir(key)), true);
   });
 });
+
+describe("janitor keeps a pending crash home until seven days after the recorded loss", () => {
+  it("preserves a recent crash and reaps one whose retention window expired", () => {
+    const recentKey = "crash-recent-7d";
+    const expiredKey = "crash-expired-7d";
+    seedHome(recentKey);
+    seedHome(expiredKey);
+    const recent = seedAgent("crash-recent", { status: "closed", codexHome: recentKey });
+    const expired = seedAgent("crash-expired", { status: "closed", codexHome: expiredKey });
+    db.prepare("UPDATE agents SET recovery_state = 'pending', closed_at = datetime('now', '-6 days') WHERE id = ?").run(recent);
+    db.prepare("UPDATE agents SET recovery_state = 'pending', closed_at = datetime('now', '-8 days') WHERE id = ?").run(expired);
+
+    const result = janitor(EMPTY);
+
+    assert.equal(result.reaped_codex_homes, 1);
+    assert.equal(existsSync(codexHomeDir(recentKey)), true);
+    assert.equal(db.prepare("SELECT codex_home, recovery_state FROM agents WHERE id = ?").get(recent).codex_home, recentKey);
+    assert.equal(existsSync(codexHomeDir(expiredKey)), false);
+    assert.equal(db.prepare("SELECT codex_home FROM agents WHERE id = ?").get(expired).codex_home, "");
+  });
+});

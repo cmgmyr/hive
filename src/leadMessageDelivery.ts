@@ -1,0 +1,556 @@
+import { dataDir, db } from "./db.js";
+import {
+  CROSS_SESSION_CLOSE,
+  promptMarkerEvidenceSql,
+  quietMessagingHooksLaunched,
+  postClaudeWake,
+  quietMessagingOn,
+  socketGraceDue,
+  socketSenderAddress,
+  SOCKET_MESSAGE_FOOTER,
+} from "./claudeWake.js";
+import { harnessFor, paneClassifierFor } from "./harnesses.js";
+import {
+  LEAD_MESSAGE_THRESHOLD,
+  MESSAGE_METHOD,
+  MESSAGE_RETENTION,
+  MESSAGE_STATUS,
+  renderLeadMessage,
+  senderTag,
+  shortenedSendNote,
+  storeLeadMessage,
+  type MessageMethod,
+  type MessageStatus,
+  type StoredLeadMessage,
+} from "./leadMessage.js";
+import { readHandoffGate } from "./leadHandoffState.js";
+import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
+import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";
+import { observeUsageLimit, usageLimitGate } from "./usageLimit.js";
+import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
+import {
+  holdsHumanInput,
+  paneInCopyMode,
+  sendText,
+  sleep,
+  TmuxTimeoutError,
+  type AliveSnapshot,
+  type RowPaneIdentity,
+} from "./tmux.js";
+import type { AgentRow } from "./agentRecords.js";
+
+type Method = MessageMethod;
+
+export interface QuietMessageReceipt {
+  agent_id: number;
+  name: string;
+  sent: boolean;
+  pending: boolean;
+  message_id?: number;
+  delivery_method?: Method;
+  confirmed?: boolean;
+  shortened?: boolean;
+  note?: string;
+}
+
+type DeliveryRow = StoredLeadMessage & { project_id: number };
+
+const EV_MARKER = "(agent_messages.sender_tag || '[message #' || agent_messages.id || ',')";
+const messageMarkerAt = (promptSql: string, startSql: string): string =>
+  `substr(${promptSql}, ${startSql}, length(${EV_MARKER})) = ${EV_MARKER}`;
+
+// The exact "[hive:worker NAME] [message #N," at prompt offset 0 (typed) or opening hive's own envelope body (socket).
+const messageEvidenceSql = (select: string): string => `
+  SELECT ${select} FROM agent_state_log ev
+   WHERE ev.actor_id = (SELECT a.actor_id FROM agents a WHERE a.id = agent_messages.to_agent_id)
+     AND ev.event = 'prompt'
+     AND ev.created_at >= COALESCE(agent_messages.socket_attempt_at, agent_messages.created_at)
+     AND ${promptMarkerEvidenceSql(messageMarkerAt)}`;
+
+const RETAINED = `agent_messages.created_at >= datetime('now', '${MESSAGE_RETENTION}')`;
+
+const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
+
+function usageLimitUntil(target: AgentRow): string | null {
+  const now = Date.now();
+  observeUsageLimit(target.id, now);
+  const gate = usageLimitGate(target.id, now);
+  return gate.held ? gate.until : null;
+}
+
+const HANDOFF_HOLD_NOTE = "the lead is handing off to a fresh session; held until the successor completes its first turn";
+
+function eligible(options: { projectId: number; fromActor: string; target: AgentRow; submit: boolean }): boolean {
+  const { projectId, fromActor, target, submit } = options;
+  if (!submit || target.kind !== "lead" || target.status !== "running" || target.actor_id === fromActor) return false;
+  if (harnessFor(target.command).name !== "claude") return false;
+  if (handoffHolds(target.id)) return true;
+  const sender = db
+    .prepare("SELECT 1 AS hit FROM agents WHERE project_id = ? AND actor_id = ? AND status = 'running' AND kind = 'agent'")
+    .get(projectId, fromActor);
+  return sender !== undefined && quietMessagingOn(projectId) && quietMessagingHooksLaunched(projectId, target.command);
+}
+
+function registeredSocket(target: AgentRow): boolean {
+  return (
+    target.claude_messaging_socket !== "" &&
+    target.claude_messaging_pane_pid !== "" &&
+    target.claude_messaging_pane_pid === target.pane_pid
+  );
+}
+
+function leadSession(agentId: number, panePid: string): string {
+  const turn = readLeadTurnState(agentId);
+  return turn !== null && turn.pane_pid === panePid ? turn.session_id : "";
+}
+
+function readRow(id: number): DeliveryRow | undefined {
+  return db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(id) as DeliveryRow | undefined;
+}
+
+function setStatus(id: number, from: MessageStatus, to: MessageStatus, fields: Record<string, string | null> = {}): boolean {
+  const names = Object.keys(fields);
+  const sets = ["delivery_status = ?", ...names.map((n) => `${n} = ?`)].join(", ");
+  try {
+    return (
+      db
+        .prepare(`UPDATE agent_messages SET ${sets} WHERE id = ? AND delivery_status = ?`)
+        .run(to, ...names.map((n) => fields[n]), id, from).changes === 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+const NOW = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
+
+function stamp(id: number, column: "typed_at" | "fallback_claimed_at"): void {
+  try {
+    db.prepare(`UPDATE agent_messages SET ${column} = ${NOW} WHERE id = ?`).run(id);
+  } catch {
+
+  }
+}
+
+function socketText(id: number, text: string, tag: string): string {
+  return `${renderLeadMessage(id, text, tag)}\n\n${SOCKET_MESSAGE_FOOTER}`;
+}
+
+type FallbackOutcome =
+  | { kind: "typed" }
+  | { kind: "held"; reason: string }
+  | { kind: "settled" }
+  | { kind: "failed"; reason: string };
+
+class UsageLimitRace extends Error {}
+
+function hold(row: DeliveryRow, reason: string): FallbackOutcome {
+  try {
+    db.prepare("UPDATE agent_messages SET delivery_note = ? WHERE id = ? AND delivery_status = ?").run(
+      reason,
+      row.id,
+      MESSAGE_STATUS.fallbackPending,
+    );
+  } catch {
+
+  }
+  return { kind: "held", reason };
+}
+
+function failPending(row: DeliveryRow, reason: string): FallbackOutcome {
+  setStatus(row.id, MESSAGE_STATUS.fallbackPending, MESSAGE_STATUS.failed, { delivery_note: reason });
+  return { kind: "failed", reason };
+}
+
+function pasteFailure(err: unknown, pasted: boolean, buffered: boolean): string {
+  const why = err instanceof Error ? err.message : String(err);
+  if (pasted) {
+    return err instanceof PaneOwnershipLost
+      ? `pasted, then the Enter was withheld because pane ownership was lost: ${why} The text may be on screen unsubmitted.`
+      : `pasted, then the Enter failed: ${why} The text is on screen unsubmitted.`;
+  }
+  if (buffered && err instanceof TmuxTimeoutError) return `the paste timed out, so the text MAY be on screen unsubmitted: ${why}`;
+  return `nothing was pasted: ${why}`;
+}
+
+// A message accepted for a predecessor whose pane the same lead row now holds as a handed-off
+// successor is re-pointed at that successor, once, rather than failed as a replacement pane.
+function retargetAfterHandoff(row: DeliveryRow): DeliveryRow {
+  let accepted: Partial<RowPaneIdentity>;
+  try {
+    accepted = JSON.parse(row.target_identity ?? "{}") as Partial<RowPaneIdentity>;
+  } catch {
+    return row;
+  }
+  const lead = db.prepare("SELECT * FROM agents WHERE id = ? AND kind = 'lead' AND status = 'running'").get(row.to_agent_id) as
+    | AgentRow
+    | undefined;
+  if (lead === undefined || accepted.pane_pid === lead.pane_pid || accepted.tmux_target !== lead.tmux_target) return row;
+  const handedOff = db
+    .prepare(
+      `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND pane_target = ? AND predecessor_pane_pid = ?
+         AND successor_pane_pid = ? AND state IN ${HANDED_OFF_STATES_SQL}`,
+    )
+    .get(lead.id, lead.tmux_target, accepted.pane_pid ?? "", lead.pane_pid);
+  if (handedOff === undefined) return row;
+  const identity = JSON.stringify(paneIdentity(lead));
+  try {
+    db.prepare("UPDATE agent_messages SET target_identity = ? WHERE id = ? AND target_identity IS ? AND delivery_status = ?").run(
+      identity,
+      row.id,
+      row.target_identity,
+      MESSAGE_STATUS.fallbackPending,
+    );
+  } catch {
+
+  }
+  return readRow(row.id) ?? row;
+}
+
+// One guarded pane attempt. The claim is the CAS that makes it at most one per message.
+async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | null): Promise<FallbackOutcome> {
+  const initialTarget = db.prepare("SELECT * FROM agents WHERE id = ?").get(original.to_agent_id) as AgentRow | undefined;
+  const heldUntil = initialTarget ? usageLimitUntil(initialTarget) : null;
+  if (heldUntil !== null) return hold(original, `the target harness is stopped by a usage limit until ${heldUntil}`);
+  if (handoffHolds(original.to_agent_id)) return hold(original, HANDOFF_HOLD_NOTE);
+  const row = retargetAfterHandoff(original);
+  let identity: RowPaneIdentity;
+  try {
+    identity = paneIdentity(JSON.parse(row.target_identity ?? "") as RowPaneIdentity);
+  } catch {
+    return failPending(row, "the accepted target identity is unreadable, so no pane can be certified as the lead's");
+  }
+  const target = db.prepare("SELECT kind, command FROM agents WHERE id = ?").get(row.to_agent_id) as
+    | { kind: string; command: string }
+    | undefined;
+  const ownership = currentOwnership(row.to_agent_id, identity, snapshot);
+  if (ownership === "unknown") return hold(row, "the lead's pane ownership reads unknown");
+  if (ownership !== "live" || target === undefined) {
+    return failPending(row, `the lead pane this message was accepted for is ${ownership}; nothing is typed into a replacement`);
+  }
+  const expiresAt = tryAcquirePaneLease(row.project_id, identity.tmux_socket, identity.tmux_target, {
+    id: row.from_actor,
+    name: row.from_name,
+    kind: "agent",
+  });
+  if (expiresAt === null) return hold(row, "another delivery holds the lead's pane");
+  let wrote = false;
+  try {
+    const pane = identity.tmux_target;
+    if (paneInCopyMode(pane) === true) return hold(row, "the lead's pane is in copy mode");
+    const classifier = paneClassifierFor(target.command);
+    if (!classifier) return hold(row, "hive cannot classify the lead's screen");
+    const choice = classifier.choiceCheck(pane).awaitingChoice;
+    if (choice !== false) return hold(row, choice ? "the lead's pane is waiting on a choice" : "the lead's pane could not be read");
+    if (holdsHumanInput(classifier.inputBoxState(pane))) return hold(row, "the lead's input box holds unsubmitted text");
+    const latestTarget = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+    const latestHold = latestTarget ? usageLimitUntil(latestTarget) : null;
+    if (latestHold !== null) return hold(row, `the target harness is stopped by a usage limit until ${latestHold}`);
+
+    const claimed = (() => {
+      try {
+        return (
+          db
+            .prepare(
+              `UPDATE agent_messages SET delivery_status = ?, fallback_claimed_at = ${NOW}
+                WHERE id = ? AND delivery_status = ? AND NOT EXISTS (${messageEvidenceSql("1")})`,
+            )
+            .run(MESSAGE_STATUS.fallbackClaimed, row.id, MESSAGE_STATUS.fallbackPending).changes === 1
+        );
+      } catch {
+        return false;
+      }
+    })();
+    if (!claimed) return { kind: "settled" };
+
+    let pasted = false;
+    let buffered = false;
+    wrote = true;
+    try {
+      await sendText(
+        pane,
+        target.kind === "lead"
+          ? renderLeadMessage(row.id, row.text, row.sender_tag ?? "", row.socket_attempt_at !== null)
+          : `${row.sender_tag ?? ""}${row.text}`,
+        true,
+        () => {
+          pasted = true;
+          stamp(row.id, "typed_at");
+        },
+        () => {
+          buffered = true;
+        },
+        () => {
+          const current = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+          if (current) {
+            const until = usageLimitUntil(current);
+            if (until !== null) throw new UsageLimitRace(`the target harness is stopped by a usage limit until ${until}`);
+          }
+          requireStillOwned(row.to_agent_id, identity, `message #${row.id} fallback`);
+        },
+      );
+    } catch (err) {
+      if (err instanceof UsageLimitRace && !pasted) {
+        const reason = err.message;
+        setStatus(row.id, MESSAGE_STATUS.fallbackClaimed, MESSAGE_STATUS.fallbackPending, { delivery_note: reason });
+        return { kind: "held", reason };
+      }
+      const reason = pasteFailure(err, pasted, buffered);
+      setStatus(row.id, MESSAGE_STATUS.fallbackClaimed, MESSAGE_STATUS.failed, { delivery_note: reason });
+      return { kind: "failed", reason };
+    }
+    setStatus(row.id, MESSAGE_STATUS.fallbackClaimed, MESSAGE_STATUS.complete);
+    return { kind: "typed" };
+  } finally {
+    if (wrote) await sleep(PANE_LEASE_SETTLE_MS);
+    releasePaneLease(row.project_id, identity.tmux_socket, identity.tmux_target, expiresAt);
+  }
+}
+
+function earlierFallbackPending(row: DeliveryRow): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 AS hit FROM agent_messages
+          WHERE from_actor = ? AND to_agent_id = ? AND id < ? AND delivery_status = ? AND ${RETAINED}`,
+      )
+      .get(row.from_actor, row.to_agent_id, row.id, MESSAGE_STATUS.fallbackPending) !== undefined
+  );
+}
+
+const DO_NOT_RESEND = "do not resend";
+
+export async function sendUsageHeldMessage(options: {
+  projectId: number;
+  fromActor: string;
+  target: AgentRow;
+  text: string;
+  submit: boolean;
+}): Promise<QuietMessageReceipt | null> {
+  if (!options.submit || options.target.status !== "running") return null;
+  const until = usageLimitUntil(options.target);
+  if (until === null) return null;
+  const { projectId, fromActor, target, text } = options;
+  const { id } = storeLeadMessage(projectId, fromActor, target.id, text);
+  const tag = senderTag(projectId, fromActor);
+  db.prepare(`UPDATE agent_messages SET delivery_status = ?, delivery_method = ?, delivery_note = ?,
+      target_identity = ?, sender_tag = ? WHERE id = ?`)
+    .run(MESSAGE_STATUS.fallbackPending, MESSAGE_METHOD.pty, `held for usage limit until ${until}`, JSON.stringify(paneIdentity(target)), tag, id);
+  return {
+    agent_id: target.id,
+    name: target.name,
+    sent: false,
+    pending: true,
+    message_id: id,
+    delivery_method: MESSAGE_METHOD.pty,
+    note: `Message #${id} is accepted and stored, held for the target's usage limit until ${until}; do NOT resubmit it. agent_message_get(${id}) shows its delivery state.`,
+  };
+}
+
+// null means this send is not eligible, and agent_send's ordinary pane path runs unchanged.
+export async function sendQuietLeadMessage(options: {
+  projectId: number;
+  fromActor: string;
+  target: AgentRow;
+  text: string;
+  submit: boolean;
+}): Promise<QuietMessageReceipt | null> {
+  const held = await sendUsageHeldMessage(options);
+  if (held !== null) return held;
+  if (!eligible(options)) return null;
+  const { projectId, fromActor, target, text } = options;
+  const identity = paneIdentity(target);
+  const tag = senderTag(projectId, fromActor);
+  const session = leadSession(target.id, target.pane_pid);
+  const { id } = storeLeadMessage(projectId, fromActor, target.id, text);
+  const long = text.length > LEAD_MESSAGE_THRESHOLD;
+  const base = { agent_id: target.id, name: target.name, message_id: id, ...(long ? { shortened: true } : {}) };
+  const shortNote = (channel: "pane" | "socket", redelivered = false) =>
+    long ? ` ${shortenedSendNote(id, renderLeadMessage(id, text, tag, redelivered).length, channel)}` : "";
+
+  const body = socketText(id, text, tag);
+  const skip = handoffHolds(target.id)
+    ? HANDOFF_HOLD_NOTE
+    : !registeredSocket(target)
+    ? "no messaging socket registered for this lead pane"
+    : body.includes(CROSS_SESSION_CLOSE)
+      ? "the text contains the envelope's closing tag"
+      : null;
+  // One statement makes the row visible to the scheduler, already in its route's status.
+  db.prepare(
+    `UPDATE agent_messages SET delivery_status = ?, delivery_method = ?, socket_attempt_at = ${skip === null ? NOW : "NULL"},
+       delivery_note = ?, target_identity = ?, sender_tag = ? WHERE id = ?`,
+  ).run(
+    skip === null ? MESSAGE_STATUS.socketPending : MESSAGE_STATUS.fallbackPending,
+    skip === null ? MESSAGE_METHOD.socket : MESSAGE_METHOD.pty,
+    skip,
+    JSON.stringify(identity),
+    tag,
+    id,
+  );
+  if (skip === null) {
+    const posted = await postClaudeWake({
+      socketPath: target.claude_messaging_socket,
+      senderAddress: socketSenderAddress(dataDir),
+      text: body,
+      beforeWrite: () => {
+        requireStillOwned(target.id, identity, `message #${id} socket delivery`);
+        const until = usageLimitUntil(target);
+        if (until !== null) {
+          setStatus(id, MESSAGE_STATUS.socketPending, MESSAGE_STATUS.fallbackPending, {
+            delivery_method: MESSAGE_METHOD.pty,
+            delivery_note: `held for usage limit until ${until}`,
+          });
+          return false;
+        }
+        const now = db
+          .prepare(
+            `SELECT a.status, a.kind, a.pane_pid, a.claude_messaging_socket AS socket, a.claude_messaging_pane_pid AS pid,
+                    m.delivery_status
+               FROM agents a, agent_messages m WHERE a.id = ? AND m.id = ?`,
+          )
+          .get(target.id, id) as
+          | { status: string; kind: string; pane_pid: string; socket: string; pid: string; delivery_status: string }
+          | undefined;
+        return (
+          now !== undefined &&
+          now.status === "running" &&
+          now.kind === "lead" &&
+          now.socket === target.claude_messaging_socket &&
+          now.pid === identity.pane_pid &&
+          now.pane_pid === identity.pane_pid &&
+          now.delivery_status === MESSAGE_STATUS.socketPending &&
+          leadSession(target.id, identity.pane_pid) === session
+        );
+      },
+    });
+    if (posted) {
+      return {
+        ...base,
+        sent: true,
+        pending: true,
+        delivery_method: MESSAGE_METHOD.socket,
+        confirmed: false,
+        note:
+          `Posted locally to the lead's messaging socket as message #${id}, awaiting prompt confirmation; ${DO_NOT_RESEND}. ` +
+          "sent means handed to the transport, not read: if no prompt confirms it, hive types it into the lead's pane once." +
+          shortNote("socket"),
+      };
+    }
+    setStatus(id, MESSAGE_STATUS.socketPending, MESSAGE_STATUS.fallbackPending, {
+      delivery_method: MESSAGE_METHOD.ptyAfterSocketTimeout,
+      delivery_note: "the socket post failed or timed out",
+    });
+  }
+
+  const row = readRow(id)!;
+  const method = (row.delivery_method ?? MESSAGE_METHOD.pty) as Method;
+  const outcome: FallbackOutcome = earlierFallbackPending(row)
+    ? hold(row, "an earlier message from this sender to this lead is still awaiting its pane fallback, and this one follows it")
+    : await paneFallback(row);
+  if (outcome.kind === "typed") {
+    const note = shortNote("pane", row.socket_attempt_at !== null).trim();
+    return { ...base, sent: true, pending: false, delivery_method: method, ...(note ? { note } : {}) };
+  }
+  if (outcome.kind === "held") {
+    return {
+      ...base,
+      sent: false,
+      pending: true,
+      delivery_method: method,
+      note:
+        `Not typed yet: ${outcome.reason}. Message #${id} is accepted and stored, and hive retries it from the ` +
+        `scheduler; do NOT resubmit it. agent_message_get(${id}) shows its delivery state.` +
+        shortNote("socket"),
+    };
+  }
+  if (outcome.kind === "settled") {
+    const now = readRow(id);
+    return {
+      ...base,
+      sent: true,
+      pending: now?.delivery_status !== MESSAGE_STATUS.complete,
+      delivery_method: method,
+      confirmed: now?.confirmed_at != null,
+      note: `Message #${id} was settled by another delivery path; ${DO_NOT_RESEND}. agent_message_get(${id}) shows its state.`,
+    };
+  }
+  throw new Error(
+    `[agent_send:quiet-fallback-failed] message #${id} to ${target.name}: ${outcome.reason} hive will not type it again. ` +
+      `Do NOT resend blindly: read the lead's pane first, and agent_message_get(${id}) shows the recorded state.`,
+  );
+}
+
+function graceExpired(row: DeliveryRow, actorId: string, panePid: string): boolean {
+  return socketGraceDue(actorId, row.socket_attempt_at, panePid, () => readLeadTurnState(row.to_agent_id));
+}
+
+function confirmFromPrompts(): void {
+  db.prepare(
+    `UPDATE agent_messages SET confirmed_at = (${messageEvidenceSql("MIN(ev.created_at)")}), delivery_status = ?
+      WHERE delivery_status IS NOT NULL AND delivery_status != ? AND confirmed_at IS NULL AND ${RETAINED}
+        AND EXISTS (${messageEvidenceSql("1")})`,
+  ).run(MESSAGE_STATUS.complete, MESSAGE_STATUS.complete);
+}
+
+function expireGrace(): void {
+  const pending = db
+    .prepare(`SELECT agent_messages.* FROM agent_messages WHERE delivery_status = ? AND ${RETAINED} ORDER BY id`)
+    .all(MESSAGE_STATUS.socketPending) as DeliveryRow[];
+  for (const row of pending) {
+    try {
+      const target = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+      if (target && usageLimitUntil(target) !== null) continue;
+      const panePid = (JSON.parse(row.target_identity ?? "{}") as Partial<RowPaneIdentity>).pane_pid ?? "";
+      if (target === undefined || !graceExpired(row, target.actor_id, panePid)) continue;
+      db.prepare(
+        `UPDATE agent_messages SET delivery_status = ?, delivery_method = ?, delivery_note = ?
+          WHERE id = ? AND delivery_status = ? AND NOT EXISTS (${messageEvidenceSql("1")})`,
+      ).run(
+        MESSAGE_STATUS.fallbackPending,
+        MESSAGE_METHOD.ptyAfterSocketTimeout,
+        "no prompt confirmed the socket post within its grace",
+        row.id,
+        MESSAGE_STATUS.socketPending,
+      );
+    } catch {
+
+    }
+  }
+}
+
+// Runs inside tick's try; each row's failure is contained so one bad delivery cannot strand the rest.
+export async function retryQuietLeadMessages(snapshot: AliveSnapshot | null): Promise<void> {
+  try {
+    confirmFromPrompts();
+  } catch {
+
+  }
+  expireGrace();
+  let due: DeliveryRow[];
+  try {
+    due = db
+      .prepare(`SELECT agent_messages.* FROM agent_messages WHERE delivery_status = ? AND ${RETAINED} ORDER BY id`)
+      .all(MESSAGE_STATUS.fallbackPending) as DeliveryRow[];
+  } catch {
+    return;
+  }
+  const blocked = new Set<string>();
+  for (const row of due) {
+    const pair = `${row.from_actor}\u0000${row.to_agent_id}`;
+    if (blocked.has(pair)) continue;
+    try {
+      const target = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+      const until = target ? usageLimitUntil(target) : null;
+      if (until !== null) {
+        hold(row, `the target harness is stopped by a usage limit until ${until}`);
+        blocked.add(pair);
+        continue;
+      }
+      const outcome = await paneFallback(row, snapshot);
+      if (outcome.kind === "held") blocked.add(pair);
+    } catch {
+      blocked.add(pair);
+    }
+  }
+}

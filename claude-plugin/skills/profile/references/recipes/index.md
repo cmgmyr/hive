@@ -10,3 +10,4 @@ A recipe is an optional pattern a profile can adopt: a short, named block of tex
 | [session-continuity.md](session-continuity.md) | A reopened session repeats decisions or loses the next action. | A small finish/start habit that carries the next action across sessions. | Both |
 | [worker-context-checkpoint.md](worker-context-checkpoint.md) | Delegated work runs long enough that a worker loses useful context. | A checkpoint threshold and a designated recipient who decides whether to continue. | Orchestration only |
 
+Worked examples, not recipes: [../examples/README.md](../examples/README.md). Open one only when the user asks to see or adapt one.

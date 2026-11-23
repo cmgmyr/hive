@@ -67,6 +67,25 @@ export interface StoppedProcess {
   note?: string;
 }
 
+export type StartResult =
+  | { status: "started"; message: string }
+  | { status: "already-running"; location: "shown" | "hidden" | null }
+  | { status: "refused"; reason: "reserved-name" | "untrusted" | "escaped-dir" | "unknown-liveness"; message?: string }
+  | { status: "failed"; message: string };
+
+export function renderStart(result: StartResult): string {
+  switch (result.status) {
+    case "started":
+      return result.message;
+    case "already-running":
+      return `already running${result.location ? ` (${result.location})` : ""}`;
+    case "refused":
+      return result.message ?? "";
+    case "failed":
+      return `failed: ${result.message}`;
+  }
+}
+
 export interface StoppableRow {
   id: number;
   project_id: number;

@@ -44,6 +44,24 @@ const SHIPPED = [
   "12aeab09e1f36797",
   "7b578d260ab037fb",
   "5bd03014166fe805",
+  "d8f7d70c9b3beb73",
+  "5d9bb5bca05bf311",
+  "776dcb6fc0ab3ac8",
+  "d1f076c392332f37",
+  "08a409ddadb42342",
+  "6b4142dc65f6de9d",
+  "1d383258c7f20f71",
+  "0daab25e0fc7e2c8",
+  "1acfb6d8ef98561b",
+  "c33d4dab459587c3",
+  "eb59a7d3f4851eb5",
+  "fd2b3b6dc1ca73d8",
+  "e3fb399f68b0b787",
+  "48f7023ba8512413",
+  "f1b1eb472f87051c",
+  "62f1b61a89654979",
+  "55ecf1e9425d5971",
+  "9014d3cc2ecd6441"
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
@@ -69,5 +87,35 @@ describe("MIGRATIONS is append-only", () => {
       SHIPPED.length,
       `append to SHIPPED, in order: ${MIGRATIONS.slice(SHIPPED.length).map((s) => JSON.stringify(hash(s))).join(", ")}`,
     );
+  });
+
+  it("migration 35 adds only the nullable delivered_by column to wakes", () => {
+    assert.equal(MIGRATIONS[34], "ALTER TABLE wakes ADD COLUMN delivered_by TEXT;");
+  });
+
+  it("migration 45 recreates the handoff fence with the grace-start ceiling", () => {
+    const migration = MIGRATIONS[44];
+    assert.match(migration, /^\s*DROP TRIGGER fence_handoff_held_claim;/);
+    assert.match(migration, /CREATE TRIGGER fence_handoff_held_claim/);
+    assert.match(migration, /h\.grace_started_at IS NOT NULL/);
+    assert.match(migration, /julianday\('now'\) - julianday\(h\.grace_started_at\).*< 900/s);
+  });
+
+  it("migration 46 adds the worker recovery marker", () => {
+    assert.match(MIGRATIONS[45], /ALTER TABLE agents ADD COLUMN recovery_state/);
+    assert.match(MIGRATIONS[45], /DEFAULT ''/);
+    assert.match(MIGRATIONS[45], /'pending', 'excluded'/);
+  });
+
+  it("migration 47 adds the per-agent usage-limit table", () => {
+    assert.match(MIGRATIONS[46], /CREATE TABLE agent_usage_limits/);
+    assert.match(MIGRATIONS[46], /continue_claimed_at TEXT/);
+  });
+
+  it("migration 48 appends only fork lineage columns", () => {
+    const migration = MIGRATIONS[47];
+    assert.match(migration, /ALTER TABLE agents ADD COLUMN forked_from_agent_id INTEGER REFERENCES agents\(id\);/);
+    assert.match(migration, /ALTER TABLE agents ADD COLUMN forked_from_session_id TEXT NOT NULL DEFAULT '';/);
+    assert.equal((migration.match(/ALTER TABLE/g) ?? []).length, 2);
   });
 });

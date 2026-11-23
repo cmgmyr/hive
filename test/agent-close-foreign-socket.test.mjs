@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
-import { McpClient, clearHiveEnv, isolateTmux, scratchDirs, seedLeadRow } from "./helpers.mjs";
+import { assertScratchStore, McpClient, clearHiveEnv, isolateTmux, scratchDirs, seedLeadRow } from "./helpers.mjs";
 
 const { hasTmux } = isolateTmux("the agent_close foreign-socket tests");
 
@@ -9,6 +9,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 

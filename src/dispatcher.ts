@@ -15,6 +15,10 @@ function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+export function repinCommand(node: string, cli: string): string {
+  return `${shQuote(node)} ${shQuote(cli)} setup`;
+}
+
 export function dispatcherScript(node: string, cli: string): string {
   return [
     "#!/bin/sh",
@@ -22,7 +26,7 @@ export function dispatcherScript(node: string, cli: string): string {
     "# Written by `hive setup`. It runs hive under one fixed interpreter, so a",
     "# version manager resolving `node` per directory cannot land hive on a Node",
     "# better-sqlite3's addon refuses to load under.",
-    "# Regenerate after every update: npm install && npm run build && hive setup",
+    `# Regenerate after every update: ${repinCommand(node, cli)}`,
     `exec ${shQuote(node)} ${shQuote(cli)} "$@"`,
     "",
   ].join("\n");

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the foreign-socket liveness tests");
 
@@ -14,6 +14,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { janitor, tick } = await import("../dist/scheduler.js");
 const { summaryLiveness } = await import("../dist/tools/agents.js");
 const { foreignSocket, rowLive, rowAlive, tmuxSocketPath } = await import("../dist/tmux.js");

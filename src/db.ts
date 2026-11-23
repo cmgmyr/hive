@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { guardAbi } from "./abi.js";
 import { guardStoreDir } from "./dataDir.js";
 import { maybeBackupBeforeMigrations } from "./backup.js";
-import { errorMessage } from "./result.js";
+import { errorMessage } from "./errors.js";
 
 export const dataDir = guardStoreDir();
 mkdirSync(dataDir, { recursive: true });
@@ -440,6 +440,364 @@ CREATE TABLE queen_audit (
   CHECK(home_project_id != target_project_id)
 );
 CREATE INDEX idx_queen_audit_target ON queen_audit(target_project_id, id);
+`,
+
+  `
+ALTER TABLE agents ADD COLUMN claude_messaging_socket TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN claude_messaging_pane_pid TEXT NOT NULL DEFAULT '';
+ALTER TABLE wakes ADD COLUMN delivery_method TEXT;
+ALTER TABLE wakes ADD COLUMN socket_attempt_at TEXT;
+ALTER TABLE wakes ADD COLUMN socket_delivery_note TEXT;
+`,
+  `ALTER TABLE wakes ADD COLUMN delivered_by TEXT;`,
+
+  `
+ALTER TABLE agent_messages ADD COLUMN delivery_status TEXT;
+ALTER TABLE agent_messages ADD COLUMN delivery_method TEXT;
+ALTER TABLE agent_messages ADD COLUMN socket_attempt_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN confirmed_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN fallback_claimed_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN typed_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN delivery_note TEXT;
+ALTER TABLE agent_messages ADD COLUMN target_identity TEXT;
+ALTER TABLE agent_messages ADD COLUMN sender_tag TEXT;
+CREATE INDEX idx_agent_messages_delivery ON agent_messages(delivery_status, id) WHERE delivery_status IS NOT NULL;
+`,
+
+  `ALTER TABLE agents ADD COLUMN todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL;`,
+
+  `
+ALTER TABLE lead_turn_state ADD COLUMN snapshot_pane_pid TEXT NOT NULL DEFAULT '';
+ALTER TABLE lead_turn_state ADD COLUMN snapshot_session_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE lead_turn_state ADD COLUMN prompt_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE lead_turn_state ADD COLUMN human_prompt_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE lead_turn_state ADD COLUMN human_prompt_at TEXT;
+ALTER TABLE lead_turn_state ADD COLUMN transcript_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE lead_turn_state ADD COLUMN stop_prompt_seq INTEGER;
+ALTER TABLE lead_turn_state ADD COLUMN stop_background TEXT;
+ALTER TABLE lead_turn_state ADD COLUMN stop_at TEXT;
+
+CREATE TABLE lead_handoffs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lead_agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  pane_target TEXT NOT NULL,
+  tmux_socket TEXT NOT NULL DEFAULT '',
+  predecessor_pane_pid TEXT NOT NULL,
+  predecessor_session_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('warn', 'stop')),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'wind_down', 'requested', 'grace', 'postponed',
+    'respawning', 'started', 'completed', 'failed', 'ambiguous')),
+  pass INTEGER NOT NULL DEFAULT 1,
+  request_reason TEXT CHECK (request_reason IN ('warn', 'stop')),
+  pass_started_at TEXT,
+  request_wake_id INTEGER,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  owner_token TEXT,
+  owner_pid INTEGER,
+  grace_seconds INTEGER,
+  grace_started_at TEXT,
+  human_prompt_baseline INTEGER,
+  pad_id INTEGER,
+  pad_revision INTEGER,
+  pad_length INTEGER,
+  pad_sha256 TEXT,
+  respawn_claimed_at TEXT,
+  predecessor_turns INTEGER,
+  hold_since TEXT,
+  hold_released_at TEXT,
+  blocked_reason TEXT,
+  successor_pane_pid TEXT,
+  successor_session_id TEXT,
+  delivered_pad_id INTEGER,
+  delivered_pad_revision INTEGER,
+  started_at TEXT,
+  completed_at TEXT,
+  failure TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+CREATE UNIQUE INDEX idx_lead_handoffs_epoch
+  ON lead_handoffs(project_id, lead_agent_id, predecessor_pane_pid, predecessor_session_id);
+CREATE UNIQUE INDEX idx_lead_handoffs_active
+  ON lead_handoffs(lead_agent_id) WHERE state NOT IN ('completed', 'failed');
+`,
+
+  `
+CREATE TRIGGER fence_handoff_held_claim
+BEFORE UPDATE OF fire_count, delivery_method ON wakes
+FOR EACH ROW
+WHEN (NEW.fire_count > OLD.fire_count
+      OR (NEW.delivery_method IS 'pty-after-socket-timeout'
+          AND OLD.delivery_method IS NOT 'pty-after-socket-timeout'
+          AND NEW.typed_at IS NULL))
+  AND EXISTS (
+    SELECT 1 FROM lead_handoffs h
+     WHERE h.lead_agent_id = (SELECT a.id FROM agents a
+                               WHERE a.actor_id = NEW.deliver_actor
+                               ORDER BY (a.status = 'running') DESC,
+                                        a.id DESC
+                               LIMIT 1)
+       AND h.state NOT IN ('completed', 'failed')
+       AND h.request_wake_id IS NOT NEW.id
+       AND (h.state = 'grace'
+            OR (h.hold_released_at IS NULL AND (
+                  h.state IN ('respawning', 'ambiguous', 'wind_down')
+                  OR (h.state = 'requested'
+                      AND (h.reason = 'stop' OR h.pass >= 2))
+                  OR (h.state = 'postponed' AND h.reason = 'stop'))))
+       AND (julianday('now') - julianday(h.updated_at)) * 86400 < 3600)
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+`,
+
+  `DROP TRIGGER fence_handoff_held_claim;`,
+
+  `
+CREATE TRIGGER fence_handoff_held_claim
+BEFORE UPDATE OF fire_count, delivery_method ON wakes
+FOR EACH ROW
+WHEN (NEW.fire_count > OLD.fire_count
+      OR (NEW.delivery_method IS 'pty-after-socket-timeout'
+          AND OLD.delivery_method IS NOT 'pty-after-socket-timeout'
+          AND NEW.typed_at IS NULL))
+  AND EXISTS (
+    SELECT 1 FROM lead_handoffs h
+     WHERE h.lead_agent_id = (SELECT a.id FROM agents a
+                               WHERE a.actor_id = NEW.deliver_actor
+                               ORDER BY (a.status = 'running') DESC,
+                                        a.id DESC
+                               LIMIT 1)
+       AND h.state NOT IN ('completed', 'failed')
+       AND h.request_wake_id IS NOT NEW.id
+       AND (h.state IN ('grace', 'started')
+            OR (h.hold_released_at IS NULL AND (
+                  h.state IN ('respawning', 'ambiguous', 'wind_down')
+                  OR (h.state = 'requested'
+                      AND (h.reason = 'stop' OR h.pass >= 2))
+                  OR (h.state = 'postponed' AND h.reason = 'stop'))))
+       AND (julianday('now') - julianday(h.updated_at)) * 86400 < 3600)
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+`,
+  `
+CREATE TABLE questions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  asker TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('choice', 'free_text')),
+  question TEXT NOT NULL CHECK (trim(question) != ''),
+  header TEXT NOT NULL CHECK (trim(header) != ''),
+  options TEXT,
+  default_answer TEXT NOT NULL CHECK (trim(default_answer) != ''),
+  ref_kind TEXT CHECK (ref_kind IN ('todo', 'pr')),
+  ref_number INTEGER CHECK (ref_number > 0),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'answered', 'defaulted', 'withdrawn')),
+  answer TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT NOT NULL,
+  answered_by TEXT,
+  CHECK ((ref_kind IS NULL) = (ref_number IS NULL)),
+  CHECK ((kind = 'choice') = (options IS NOT NULL))
+);
+CREATE UNIQUE INDEX idx_questions_pending_ref ON questions(project_id, ref_kind, ref_number)
+  WHERE state = 'pending' AND ref_kind IS NOT NULL;
+CREATE INDEX idx_questions_project_state ON questions(project_id, state, id);
+`,
+
+  `
+ALTER TABLE queen_audit ADD COLUMN outcome TEXT NOT NULL DEFAULT 'confirmed'
+  CHECK (outcome IN ('confirmed', 'refused'));
+ALTER TABLE queen_audit ADD COLUMN problem TEXT NOT NULL DEFAULT '';
+`,
+  `
+ALTER TABLE agents ADD COLUMN pane_started_at TEXT;
+`,
+  `
+DROP TRIGGER fence_handoff_held_claim;
+CREATE TRIGGER fence_handoff_held_claim
+BEFORE UPDATE OF fire_count, delivery_method ON wakes
+FOR EACH ROW
+WHEN (NEW.fire_count > OLD.fire_count
+      OR (NEW.delivery_method IS 'pty-after-socket-timeout'
+          AND OLD.delivery_method IS NOT 'pty-after-socket-timeout'
+          AND NEW.typed_at IS NULL))
+  AND EXISTS (
+    SELECT 1 FROM lead_handoffs h
+     WHERE h.lead_agent_id = (SELECT a.id FROM agents a
+                               WHERE a.actor_id = NEW.deliver_actor
+                               ORDER BY (a.status = 'running') DESC,
+                                        a.id DESC
+                               LIMIT 1)
+       AND h.state NOT IN ('completed', 'failed')
+       AND h.request_wake_id IS NOT NEW.id
+       AND (
+            (h.state = 'grace'
+             AND h.hold_released_at IS NULL
+             AND h.grace_started_at IS NOT NULL
+             AND (julianday('now') - julianday(h.grace_started_at)) * 86400 < 900)
+            OR ((h.state IN ('grace', 'started')
+                 OR (h.hold_released_at IS NULL AND (
+                       h.state IN ('respawning', 'ambiguous', 'wind_down')
+                       OR (h.state = 'requested'
+                           AND (h.reason = 'stop' OR h.pass >= 2))
+                       OR (h.state = 'postponed' AND h.reason = 'stop'))))
+                AND h.state <> 'grace'
+                AND (julianday('now') - julianday(h.updated_at)) * 86400 < 3600)
+       ))
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+`,
+  `
+ALTER TABLE agents ADD COLUMN recovery_state TEXT NOT NULL DEFAULT ''
+  CHECK (recovery_state IN ('', 'pending', 'excluded'));
+`,
+  `
+CREATE TABLE agent_usage_limits (
+  agent_id INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  harness TEXT NOT NULL CHECK (harness IN ('claude', 'codex')),
+  pane_pid TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  signal_key TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  reset_at TEXT,
+  expires_at TEXT NOT NULL,
+  released_at TEXT,
+  continue_claimed_at TEXT
+);
+CREATE INDEX idx_agent_usage_limits_gate ON agent_usage_limits(project_id, harness, expires_at)
+  WHERE released_at IS NULL;
+`,
+  `
+ALTER TABLE agents ADD COLUMN forked_from_agent_id INTEGER REFERENCES agents(id);
+ALTER TABLE agents ADD COLUMN forked_from_session_id TEXT NOT NULL DEFAULT '';
+`,
+  `
+DROP TRIGGER fence_handoff_held_claim;
+CREATE TABLE lead_handoffs_manual (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lead_agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  pane_target TEXT NOT NULL,
+  tmux_socket TEXT NOT NULL DEFAULT '',
+  predecessor_pane_pid TEXT NOT NULL,
+  predecessor_session_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('warn', 'stop', 'manual')),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'wind_down', 'requested', 'grace', 'postponed',
+    'respawning', 'started', 'completed', 'failed', 'ambiguous')),
+  pass INTEGER NOT NULL DEFAULT 1,
+  request_reason TEXT CHECK (request_reason IN ('warn', 'stop', 'manual')),
+  pass_started_at TEXT,
+  request_wake_id INTEGER,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  owner_token TEXT,
+  owner_pid INTEGER,
+  grace_seconds INTEGER,
+  grace_started_at TEXT,
+  human_prompt_baseline INTEGER,
+  pad_id INTEGER,
+  pad_revision INTEGER,
+  pad_length INTEGER,
+  pad_sha256 TEXT,
+  respawn_claimed_at TEXT,
+  predecessor_turns INTEGER,
+  hold_since TEXT,
+  hold_released_at TEXT,
+  blocked_reason TEXT,
+  successor_pane_pid TEXT,
+  successor_session_id TEXT,
+  delivered_pad_id INTEGER,
+  delivered_pad_revision INTEGER,
+  started_at TEXT,
+  completed_at TEXT,
+  failure TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+INSERT INTO lead_handoffs_manual (
+  id, project_id, lead_agent_id, pane_target, tmux_socket, predecessor_pane_pid,
+  predecessor_session_id, reason, state, pass, request_reason, pass_started_at, request_wake_id,
+  attempt, owner_token, owner_pid, grace_seconds, grace_started_at, human_prompt_baseline, pad_id,
+  pad_revision, pad_length, pad_sha256, respawn_claimed_at, predecessor_turns, hold_since,
+  hold_released_at, blocked_reason, successor_pane_pid, successor_session_id, delivered_pad_id,
+  delivered_pad_revision, started_at, completed_at, failure, created_at, updated_at)
+SELECT
+  id, project_id, lead_agent_id, pane_target, tmux_socket, predecessor_pane_pid,
+  predecessor_session_id, reason, state, pass, request_reason, pass_started_at, request_wake_id,
+  attempt, owner_token, owner_pid, grace_seconds, grace_started_at, human_prompt_baseline, pad_id,
+  pad_revision, pad_length, pad_sha256, respawn_claimed_at, predecessor_turns, hold_since,
+  hold_released_at, blocked_reason, successor_pane_pid, successor_session_id, delivered_pad_id,
+  delivered_pad_revision, started_at, completed_at, failure, created_at, updated_at
+FROM lead_handoffs;
+UPDATE sqlite_sequence
+   SET seq = MAX(seq, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'lead_handoffs'), 0))
+ WHERE name = 'lead_handoffs_manual';
+DROP TABLE lead_handoffs;
+ALTER TABLE lead_handoffs_manual RENAME TO lead_handoffs;
+CREATE UNIQUE INDEX idx_lead_handoffs_epoch
+  ON lead_handoffs(project_id, lead_agent_id, predecessor_pane_pid, predecessor_session_id);
+CREATE UNIQUE INDEX idx_lead_handoffs_active
+  ON lead_handoffs(lead_agent_id) WHERE state NOT IN ('completed', 'failed');
+CREATE TRIGGER fence_handoff_held_claim
+BEFORE UPDATE OF fire_count, delivery_method ON wakes
+FOR EACH ROW
+WHEN (NEW.fire_count > OLD.fire_count
+      OR (NEW.delivery_method IS 'pty-after-socket-timeout'
+          AND OLD.delivery_method IS NOT 'pty-after-socket-timeout'
+          AND NEW.typed_at IS NULL))
+  AND EXISTS (
+    SELECT 1 FROM lead_handoffs h
+     WHERE h.lead_agent_id = (SELECT a.id FROM agents a
+                               WHERE a.actor_id = NEW.deliver_actor
+                               ORDER BY (a.status = 'running') DESC,
+                                        a.id DESC
+                               LIMIT 1)
+       AND h.state NOT IN ('completed', 'failed')
+       AND h.request_wake_id IS NOT NEW.id
+       AND (
+            (h.state = 'grace'
+             AND h.hold_released_at IS NULL
+             AND h.grace_started_at IS NOT NULL
+             AND (julianday('now') - julianday(h.grace_started_at)) * 86400 < 900)
+            OR ((h.state IN ('grace', 'started')
+                 OR (h.hold_released_at IS NULL AND (
+                       h.state IN ('respawning', 'ambiguous', 'wind_down')
+                       OR (h.state = 'requested'
+                           AND (h.reason = 'stop' OR h.pass >= 2))
+                       OR (h.state = 'postponed' AND h.reason = 'stop'))))
+                AND h.state <> 'grace'
+                AND (julianday('now') - julianday(h.updated_at)) * 86400 < 3600)
+       ))
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+`,
+  `
+ALTER TABLE wakes ADD COLUMN clock_at TEXT;
+ALTER TABLE wakes ADD COLUMN clock_zone TEXT;
+ALTER TABLE wakes ADD COLUMN clock_repeat TEXT;
+`,
+  `
+CREATE TABLE lease_waiters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lock_key TEXT NOT NULL,
+  actor_id TEXT NOT NULL REFERENCES actors(id),
+  agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  ttl_seconds INTEGER NOT NULL CHECK(ttl_seconds > 0),
+  queued_at TEXT NOT NULL DEFAULT (datetime('now')),
+  max_wait_at TEXT NOT NULL,
+  UNIQUE(project_id, lock_key, actor_id)
+);
+CREATE INDEX idx_lease_waiters_key ON lease_waiters(project_id, lock_key, id);
+CREATE INDEX idx_lease_waiters_deadline ON lease_waiters(max_wait_at);
+CREATE INDEX idx_lease_waiters_agent ON lease_waiters(agent_id);
 `,
 ];
 

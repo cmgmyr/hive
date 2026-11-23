@@ -7,10 +7,10 @@ one project-scoped state store: pads, todos, kv, leases.
 Call help(topic="<name>") for details. Topics: ${Object.keys(HELP_TOPICS).join(", ")}.
 
 Scope resolution for project-scoped tools:
-  pass project_id for a one-off override
-  otherwise hive uses the project selected in this session
-  otherwise it auto-detects from the working directory, or auto-selects a
-  single registered project
+  resolution order is project_id override, session selection, worker pin,
+  then working directory; a git worktree or subdirectory resolves to its
+  primary checkout, and an unmatched directory becomes a new project
+  instead of falling back to an unrelated one
 
 Quick start:
   1. whoami — see your actor id and effective project
@@ -21,7 +21,7 @@ PROMPTS — invokable prompts (slash commands in MCP clients)
   runbook — load this project's own standing process
 
 AGENTS — spawn and drive worker sessions in tmux
-  agent_spawn, agent_list, agent_status, agent_send, agent_output,
+  agent_spawn, agent_fork, agent_list, agent_status, agent_send, agent_output,
   agent_message_get, agent_rename, agent_park, agent_resume, agent_close
 
 WAKE-UPS — scheduled nudges instead of polling
@@ -40,14 +40,39 @@ KV — small shared status values (with optional TTL)
 LEASES — advisory expiring claims on shared state
   lease_acquire, lease_release
 
+QUESTIONS — open questions for the human, recorded in the store
+  question_ask, question_get, question_list, question_update, question_answer
+
 PROJECTS — scope management
   project_list, project_add, project_select, project_prune
+
+QUEEN AUDIT — confirmed queen writes and refused cross-project guard calls
+  queen_audit_list(project_id?, limit?)
 
 ACTORS — who is writing
   actor_prune`;
 }
 
 export const HELP_TOPICS: Record<string, string> = {
+  "crew-restore": `CREW RESTORE — resume crashed workers for this project
+
+Run \`hive crew-restore [--dry-run] [--json]\` from a registered project.
+The command resumes rows marked pending after a confirmed worker pane loss.
+It skips live, unknown, parked, deliberately closed and historical rows.
+The dry run reports candidates and blockers without changing rows or panes.
+Each restored worker keeps its row, actor, session, working directory and
+launch options. The command does not replay its previous assignment.
+
+This is a CLI command for the local tmux environment, not an MCP tool.`,
+
+  layout: `LAYOUT — restore a project's worker pane layout
+
+Run \`hive layout\` in a project to gather its live worker panes into the lead
+window and re-apply the merged hive.yml layout. The command takes no flags. It
+does nothing when the resolved placement is "window".
+
+This is a CLI command for the local tmux environment, not an MCP tool.`,
+
   workflow: `WORKFLOW — lead/worker orchestration
 
 One session acts as the lead. It spawns and drives workers with the agent
@@ -131,7 +156,7 @@ runbook (fork it first), not a pad write.`,
 
   agents: `AGENTS — spawn and drive worker sessions in tmux
 
-  agent_spawn(name?, model?, command?, extra_args?, read_only?, cwd?, placement?, layout?) —
+  agent_spawn(name?, model?, command?, extra_args?, harness?, read_only?, cwd?, placement?, layout?, todo_id?) —
     start a worker (default command: claude) in session hive-main.
     placement="split" (default) tiles the worker as a pane in the lead's
     window so the whole crew shares one screen; placement="window" gives it
@@ -143,21 +168,38 @@ runbook (fork it first), not a pad write.`,
     and layout in hive.yml; an explicit argument overrides it. cwd defaults to the project root; pass
     a git worktree path to isolate parallel file edits. A claude worker gets
     its brief in the system prompt; other commands return instructions to
-    PREPEND to the first prompt.
+    PREPEND to the first prompt. A same-project worker or lead currently
+    stopped by that harness's usage limit makes spawn retryable until its
+    reset or bounded deadline; hive does not queue spawns.
     Workers run with HIVE_PROJECT_LOCK=1.
+  agent_fork(agent_id, name, cwd?, model?, effort?, read_only?, todo_id?,
+    placement?, layout?):
+    make a new worker from a same-project Claude or Codex session. The child
+    gets a new identity, pane, session and brief, and receives no assignment
+    until you send one. It does not copy the source worktree, Hive todo link,
+    or promise that harness todos or tasks copy. Claude process-scoped grants
+    need approval again. A Codex child gets a fresh home seeded with the
+    source rollout; a closed Codex worker whose home was reaped cannot fork.
   agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
     names like Escape or C-c. wait_ms returns the terminal tail after.
     Text is prefixed with the sender tag.
     Text over 300 chars sent to a LEAD by anyone but that lead is stored and
     delivered as a one-line pointer, so the human's own pane stays readable;
-    the receipt says shortened and names the message id.
-  agent_message_get(message_id) — the full text behind a pointer line. Kept
-    7 days; a lookup for a pruned id says it expired, not that it is missing.
+    the receipt says shortened and names the message id. With quiet_messaging
+    on, a worker's submitted text to a Claude lead is stored with an id and
+    posted to the lead's messaging socket instead; the receipt says pending
+    until the lead's prompt confirms it, and hive types it into the pane once
+    if nothing does. Do not resend a pending send.
+    A submitted text send to a target stopped by its usage limit is stored
+    as pending until release. keys and submit=false remain manual recovery.
+  agent_message_get(message_id) — the full text behind a pointer line, plus
+    the delivery state of a quiet message. Kept 7 days; a lookup for a pruned id says it expired, not that it is missing.
   agent_output(name|agent_id, lines?) — read the rendered terminal.
   agent_status(name|agent_id, include_brief?) — liveness, current command,
     short tail, and the path to the brief this worker was given
-    (include_brief=true returns its text; no transcript records it).
+    (include_brief=true returns its text; no transcript records it). Forked
+    workers show forked_from_agent_id and forked_from_session_id.
   agent_list(include_closed?, limit?, before_id?) — agents with live status.
     include_closed adds closed/parked rows, newest first, limit 20/max 100;
     page with before_id set to the receipt's next_before_id.
@@ -165,7 +207,7 @@ runbook (fork it first), not a pad write.`,
     stays agent:N, so older pad writes and todo comments still point here.
     A live claude worker is told to retitle its own session, which arrives as
     a user turn: rename between assignments, not mid-task.
-  agent_park(name|agent_id) — END OF DAY. Kill the pane, mark the row PARKED
+  agent_park(name|agent_id, confirm_self?) — END OF DAY. Kill the pane, mark the row PARKED
     rather than plain closed, record the branch, and hand back a board line
     plus the one call that brings the lane back. Use this instead of
     agent_close whenever the lane is PAUSED rather than finished: "closed"
@@ -174,8 +216,10 @@ runbook (fork it first), not a pad write.`,
     claude or codex worker on a fresh pane from its recorded session id,
     with the same actor_id and its full prior context. It does not send
     the assignment; agent_send it afterwards. Read the pane before
-    believing any wake about a worker you just resumed.
-  agent_close(name|agent_id) — kill the worker's pane and mark closed. Capture
+    believing any wake about a worker you just resumed. A same-project
+    harness limit makes resume retryable until its reset or bounded deadline;
+    hive does not queue resumes.
+  agent_close(name|agent_id, confirm_self?, row_only?) — kill the worker's pane and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how
     you abandon a lane you have decided not to resume. row_only=true marks
@@ -206,8 +250,12 @@ its turn), waiting (needs permission or input). Non-claude commands show
 
   wakes: `WAKE-UPS — scheduled nudges instead of polling
 
-  wake_set(delay_seconds, body, deliver_to?, repeat_every_seconds?) —
-    one-shot or repeating wake-up
+  wake_set(delay_seconds?, body, deliver_to?, repeat_every_seconds?, at?, repeat?) —
+    one-shot, fixed-interval or daily local-time wake-up. Supply exactly one
+    of delay_seconds or at="HH:MM". Clock schedules capture the creating
+    server's local IANA zone; a later OS/time-zone change needs cancel and
+    re-set. A nonexistent local minute skips that date; an ambiguous minute
+    uses its first occurrence only. Use repeat="daily" with at.
   wake_when_idle(agents | scope | lead_project_id, body, mode?,
     max_wait_seconds?, deliver_to?) — fire when workers go idle. Pass
     exactly one of:
@@ -230,14 +278,16 @@ its turn), waiting (needs permission or input). Non-claude commands show
         reason instead.
   wake_get(wake_id) — read one wake-up by id, with its untruncated body
     (wake_list truncates at 120 chars)
-  wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?) — edit
+  wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?, at?, repeat?) — edit
     a pending wake-up you own in place, without minting a new id.
     delay_seconds is relative to now; repeat_every_seconds changes only the
     interval used for firings after this one. Only body can be edited on an
     idle wake (from wake_when_idle); delay_seconds/repeat_every_seconds
-    apply to a delay wake (from wake_set) only.
-  wake_cancel(wake_id) — cancel a pending wake-up you own
-  wake_list() — pending wake-ups in this project
+    apply to an interval wake, and at/repeat apply to a clock wake only.
+    Changing at recomputes due_at; changing repeat alone leaves due_at alone.
+  wake_cancel(wake_id) — cancel a pending wake-up you own, or any pending
+    wake-up in this project when you are a running lead
+  wake_list() — pending wake-ups and recently delivered one-shot wakes
 
 Delivery contract:
   When a wake-up fires, its body is typed into the target session's terminal
@@ -246,6 +296,11 @@ Delivery contract:
   and the next action. Plain English, no markup.
   Waking your OWN lead pane is the exception: it is not cold, so carry the
   action and the ids and point at where the detail lives.
+  With a lead_turn_budget, auto_handoff is on by default. Set
+  lead_turn_budget.auto_handoff to false to keep the lead in this session.
+  When enabled, a lead past its warn budget gets
+  a "hive lead handoff request #N" wake: follow its steps, then run
+  hive lead-handoff. A human prompt during the grace postpones it.
 
 Receiving wake-ups:
   Spawned workers can always receive (deliver_to their name or id).
@@ -336,7 +391,7 @@ place.`,
   pad_append(pad_id, content, expected_revision?) — add to the end
   pad_edit(pad_id, old_text, new_text, expected_revision?) — replace one
     unique literal occurrence; include enough context to disambiguate
-  pad_list(query?, tags?, include_archived?) — summaries without content;
+  pad_list(query?, tags?, include_archived?, limit?, offset?) — summaries without content;
     query matches names and content and returns a snippet
   pad_archive(pad_id, archived?) — archive frees the name for a new active
     pad; content stays readable by pad_id. archived=false unarchives.
@@ -373,7 +428,9 @@ since every read pays for its full length.`,
 Blockers form a dependency graph (cycles are rejected). A todo is blocked
 while any of its blockers is not completed. Archived and completed are
 independent axes: archiving hides a closed lane's scaffolding from
-todo_list without marking anything done.`,
+todo_list without marking anything done. A project's optional completion_gate
+in hive.yml runs before a todo becomes completed; hive lead reviews its
+command at startup, and a refused gate leaves the todo unchanged.`,
 
   kv: `KV — small shared status values
 
@@ -384,6 +441,30 @@ todo_list without marking anything done.`,
 
 Use kv for values another session needs to discover: current branch, a port,
 a phase flag. Use pads for anything longer than a line or two.`,
+
+  questions: `QUESTIONS — open questions for the human, recorded in the store
+
+  question_ask(kind, question, header, default_answer, options?, ref?) —
+    record a question. kind=choice takes 2-4 options (label, description,
+    recommended; exactly one recommended, and default_answer is its label).
+    kind=free_text takes no options. header is 12 characters or fewer. ref
+    ({kind: "todo"|"pr", number}) is the dedupe key: asking again with a ref
+    that has a pending question in this project updates that row. The
+    receipt lists similar pending questions so you can question_update one.
+  question_get(question_id) — one question, any state, with its answer
+  question_list() — pending questions, then defaulted ones, oldest first
+  question_update(question_id, ...) — edit a pending question's text, or set
+    state to defaulted (you acted on your default) or withdrawn (moot)
+  question_answer(question_id, answer, notes?) — record the human's answer
+    to a pending or defaulted question
+
+hive stores the question; it never puts it to the human. Render it in your
+own turn. Answering queues a wake to the asker carrying the question, answer
+and notes, or reroutes it to the project's running lead when the asker has
+no running row. It skips wake delivery when you are the asker, no eligible
+target is running, or the target cannot be resolved. The answer stays
+readable either way. Nothing expires or defaults on its own: only the asker
+or the human moves a question out of pending.`,
 
   leases: `LEASES — advisory expiring claims on shared state
 

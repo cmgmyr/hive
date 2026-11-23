@@ -3,7 +3,7 @@ import SqliteDb from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { errorMessage } from "./result.js";
+import { errorMessage } from "./errors.js";
 
 export const BACKUP_DIRNAME = "backups";
 export type BackupReason = "migration" | "hourly" | "manual";

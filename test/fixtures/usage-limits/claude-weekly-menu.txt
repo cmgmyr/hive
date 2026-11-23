@@ -1,0 +1,3 @@
+What do you want to do?
+Stop and wait for limit to reset
+Switch to usage credits

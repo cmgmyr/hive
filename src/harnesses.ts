@@ -5,10 +5,10 @@ import {
   codexTrailerView,
   codexPaneChoiceCheck,
   codexPaneHasInputBox,
-  inputBoxState,
+  inputBoxSnapshot, inputBoxState,
   paneChoiceCheck,
   paneHasInputBox,
-  type InputBoxState,
+  type InputBoxSnapshot, type InputBoxState,
   type TrailerView,
 } from "./tmux.js";
 
@@ -30,7 +30,7 @@ export interface PaneChoiceCheck {
 // Resolved once at the call site, never threaded as a command string into tmux.ts's primitives.
 export interface PaneClassifier {
   choiceCheck(target: string): PaneChoiceCheck;
-  inputBoxState(target: string): InputBoxState | null;
+  inputBoxState(target: string): InputBoxState | null; inputBoxSnapshot?(target: string): InputBoxSnapshot | null;
   hasInputBox(target: string): boolean | null;
   trailerView(target: string): TrailerView | null;
 }
@@ -60,12 +60,12 @@ export interface HarnessCapabilities {
   readonly classifiesPaneScreen: boolean;
   readonly paneClassifier: PaneClassifier | null;
 
-  // Whether MCP registrations for this harness carry a scope at all; not where its config lives.
-  readonly hasScopes: boolean;
-
   // Whether agent_spawn must call ensureCodexHome before launch. A flag, not a name check, like
   // every other branch here.
   readonly needsHome: boolean;
+
+  // Env every pane of this harness gets at spawn, fork, and resume; claude keeps an inherited editor connection off.
+  readonly workerPaneEnv: Readonly<Record<string, string>>;
 
   // The CLI's own [PROMPT] positional, auto-submitted as the first user turn. null for claude on
   // purpose: its SessionStart hook already synthesizes one, so this would fire a second time.
@@ -147,11 +147,11 @@ const claudeHarness: HarnessCapabilities = {
   supportsRename: true,
 
   classifiesPaneScreen: true,
-  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox, trailerView: claudeTrailerView },
-
-  hasScopes: true,
+  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, inputBoxSnapshot, hasInputBox: paneHasInputBox, trailerView: claudeTrailerView },
 
   needsHome: false,
+
+  workerPaneEnv: { CLAUDE_CODE_AUTO_CONNECT_IDE: "false" },
 
   // "--" so a message that starts with a dash is never read as a flag.
   initialPromptArgs: (message) => ["--", message],
@@ -190,9 +190,9 @@ export const codexHarness: HarnessCapabilities = {
     trailerView: codexTrailerView,
   },
 
-  hasScopes: false,
-
   needsHome: true,
+
+  workerPaneEnv: {},
 
   // Auto-submits with no Enter; verified live on v0.149.0.
   initialPromptArgs: (message) => ["--", message],
@@ -226,9 +226,9 @@ const unknownHarness: HarnessCapabilities = {
   classifiesPaneScreen: false,
   paneClassifier: null,
 
-  hasScopes: false,
-
   needsHome: false,
+
+  workerPaneEnv: {},
 
   initialPromptArgs: null,
 

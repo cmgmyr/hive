@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
+  assertScratchStore,
   isolateTmux,
   liveAgentRow,
   makeFakeClaude,
@@ -16,6 +19,7 @@ const { hasTmux, cleanup } = isolateTmux("the agent_park tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName, targetLive } = await import("../dist/tmux.js");
 const { releaseParkRow } = await import("../dist/spawn.js");
 
@@ -50,6 +54,139 @@ const rowOf = (id) =>
   db.prepare("SELECT status, closed_at, parked_at, parked_branch FROM agents WHERE id = ?").get(id);
 
 describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  it("parks a live worker with its branch when another process sweeps between kill-pane and the park write", async () => {
+    await mcp.call("agent_spawn", { name: "park-sweep-race", command: fakeClaude() });
+    const live = await liveAgentRow(mcp, "park-sweep-race");
+    db.prepare("UPDATE agents SET created_at = datetime('now', '-60 seconds') WHERE id = ?").run(live.agent_id);
+
+    const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+    const fakeBin = join(dirs.tmp, "park-sweep-bin");
+    const sweepResult = join(dirs.tmp, "park-sweep-result.json");
+    const sweepReady = join(dirs.tmp, "park-sweep-ready");
+    const sweepScript = join(dirs.tmp, "park-sweep.mjs");
+    const layoutResult = join(dirs.tmp, "park-layout-result.json");
+    mkdirSync(fakeBin);
+    writeFileSync(sweepScript, `
+import { writeFileSync } from "node:fs";
+const { db } = await import(${JSON.stringify(new URL("../dist/db.js", import.meta.url).href)});
+if (!db.name.startsWith(process.env.HIVE_DATA_DIR + "/")) throw new Error("scratch store required");
+if (process.argv[2] === "layout") {
+  db.pragma("busy_timeout = 0");
+  const row = db.transaction(() => db.prepare("SELECT status, parked_at FROM agents WHERE id = ?").get(${live.agent_id})).immediate();
+  writeFileSync(${JSON.stringify(layoutResult)}, JSON.stringify(row));
+  process.exit(0);
+}
+const { janitor } = await import(${JSON.stringify(new URL("../dist/scheduler.js", import.meta.url).href)});
+const before = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(${live.agent_id});
+const prepare = db.prepare.bind(db);
+db.prepare = sql => {
+  const statement = prepare(sql);
+  if (sql.includes("UPDATE agents SET status = 'closed'")) {
+    const run = statement.run.bind(statement);
+    statement.run = (...args) => {
+      writeFileSync(${JSON.stringify(sweepReady)}, "updating");
+      return run(...args);
+    };
+  }
+  return statement;
+};
+try {
+  const sweep = janitor();
+  const after = db.prepare("SELECT status, recovery_state, parked_at, parked_branch FROM agents WHERE id = ?").get(${live.agent_id});
+  writeFileSync(${JSON.stringify(sweepResult)}, JSON.stringify({ before, sweep, after }));
+} catch (error) {
+  writeFileSync(${JSON.stringify(sweepResult)}, JSON.stringify({ error: String(error) }));
+}
+`);
+    writeFileSync(
+      join(fakeBin, "tmux"),
+      `#!/usr/bin/env node
+const { execFileSync, spawn } = require("node:child_process");
+const { existsSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("select-layout") && existsSync(${JSON.stringify(sweepReady)})) {
+  execFileSync(process.execPath, [${JSON.stringify(sweepScript)}, "layout"]);
+}
+execFileSync(${JSON.stringify(realTmux)}, args, { stdio: "inherit" });
+if (args.includes("kill-pane")) {
+  spawn(process.execPath, [${JSON.stringify(sweepScript)}], { stdio: "ignore" }).unref();
+  const deadline = Date.now() + 8000;
+  while (!existsSync(${JSON.stringify(sweepReady)})) {
+    if (Date.now() > deadline) throw new Error("sweep never attempted its close UPDATE");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+    const racer = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { PATH: `${fakeBin}:${process.env.PATH}` },
+    });
+    await racer.start();
+    try {
+      const outcome = await racer.call("agent_park", { agent_id: live.agent_id }).then(
+        receipt => ({ receipt }),
+        error => ({ error }),
+      );
+      const deadline = Date.now() + 8000;
+      while (!existsSync(sweepResult) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const evidence = JSON.parse(readFileSync(sweepResult, "utf8"));
+      assert.equal(evidence.error, undefined);
+      assert.deepEqual(evidence.before, { status: "running", recovery_state: "excluded" });
+      assert.equal(evidence.sweep.probed, true);
+      assert.equal(targetLive(live.tmux_target), false);
+      assert.equal(outcome.error, undefined, `park must finish after the sweep: ${JSON.stringify(evidence)}`);
+      assert.equal(outcome.receipt.parked, true);
+      assert.ok(rowOf(live.agent_id).parked_at);
+      assert.equal(rowOf(live.agent_id).parked_branch, "park-branch");
+      assert.equal(evidence.sweep.closed_agents, 0);
+      assert.ok(evidence.after.parked_at);
+      const layoutRow = JSON.parse(readFileSync(layoutResult, "utf8"));
+      assert.equal(layoutRow.status, "closed");
+      assert.ok(layoutRow.parked_at, "relayout must acquire the writer slot and see the committed park");
+    } finally {
+      await racer.close();
+    }
+  });
+
+  it("leaves a visible running worker without park fields when kill-pane fails", async () => {
+    await mcp.call("agent_spawn", { name: "park-kill-failed", command: fakeClaude() });
+    const live = await liveAgentRow(mcp, "park-kill-failed");
+    const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+    const fakeBin = join(dirs.tmp, "park-failed-kill-bin");
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, "tmux"), `#!/usr/bin/env node
+const { execFileSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args.includes("kill-pane")) {
+  console.error("kill refused for test");
+  process.exit(1);
+}
+execFileSync(${JSON.stringify(realTmux)}, args, { stdio: "inherit" });
+`, { mode: 0o755 });
+    const racer = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { PATH: `${fakeBin}:${process.env.PATH}` },
+    });
+    await racer.start();
+    try {
+      await assert.rejects(racer.call("agent_park", { agent_id: live.agent_id }), /kill refused for test/);
+      const row = rowOf(live.agent_id);
+      assert.equal(row.status, "running");
+      assert.equal(row.parked_at, "");
+      assert.equal(row.parked_branch, "");
+      assert.equal(targetLive(live.tmux_target), true);
+    } finally {
+      await racer.close();
+      await mcp.call("agent_close", { agent_id: live.agent_id });
+    }
+  });
+
   it("parks a running claude worker: the row is closed AND stamped, and the branch is recorded", async () => {
     await mcp.call("agent_spawn", { name: "park-one", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "park-one");
@@ -162,8 +299,15 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const live = await liveAgentRow(mcp, "park-namehint");
     await mcp.call("agent_park", { name: "park-namehint" });
 
+    await assert.rejects(mcp.call("agent_close", { name: "park-namehint" }), (e) => {
+      assert.match(e.message, /a parked agent is found by agent_id, not by name/);
+      assert.match(e.message, new RegExp(`agent_close\\(agent_id: ${live.agent_id}\\)`));
+      return true;
+    });
+
     await assert.rejects(mcp.call("agent_status", { name: "park-namehint" }), (e) => {
       assert.match(e.message, /is PARKED/);
+      assert.match(e.message, /a parked agent is found by agent_id, not by name/);
       assert.match(e.message, new RegExp(`agent_resume\\(agent_id: ${live.agent_id}\\)`));
       assert.ok(!/Spawn a new worker/.test(e.message), "must not advise replacing a lane that is waiting");
       return true;

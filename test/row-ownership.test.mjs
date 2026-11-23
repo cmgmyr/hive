@@ -13,7 +13,7 @@ clearHiveEnv();
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
-const { rowOwnership, ownershipLiveness, paneReissued, tmuxSocketPath } = await import("../dist/tmux.js");
+const { rowOwnership, ownershipLiveness, paneReissued, tmuxSocketPath, tmuxSaysNothingThere, TmuxError } = await import("../dist/tmux.js");
 
 const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
 const FOREIGN_SOCKET = "/nonexistent/foreign-socket-dir/tmux-0/default";
@@ -71,6 +71,23 @@ describe("rowOwnership: the four-state table over a supplied snapshot", () => {
   });
 });
 
+describe("tmuxSaysNothingThere: only a connect failure that proves no server is nothing there", () => {
+  const connect = (errno) => `error connecting to /tmp/tmux-501/default (${errno})`;
+  const table = [
+    ["no server running", "no server running on /tmp/tmux-501/default", true],
+    ["a missing socket", connect("No such file or directory"), true],
+    ["Connection refused, kept for older tmux wording", connect("Connection refused"), true],
+    ["a socket the process may not open (EACCES)", connect("Permission denied"), false],
+    ["a connect a sandbox refuses (EPERM)", connect("Operation not permitted"), false],
+    ["a socket path over the length limit", connect("File name too long"), false],
+    ["a connect failure with no reason to read", "error connecting to /tmp/tmux-501/default", false],
+    ["an unrelated tmux failure", "tmux: connection interrupted", false],
+  ];
+  for (const [name, stderr, expected] of table) {
+    it(name, () => assert.equal(tmuxSaysNothingThere(new TmuxError("tmux list-panes failed", stderr)), expected));
+  }
+});
+
 describe("rowOwnership: probing", () => {
   const session = `hive-row-ownership-${process.pid}`;
   let pane;
@@ -106,5 +123,12 @@ describe("rowOwnership: probing", () => {
   it("an omitted snapshot whose tmux call fails is unknown, not gone", { skip: !hasTmux && "tmux not installed" }, () => {
     const dir = fakeFailingTmux({ failOn: "list-panes" });
     assert.equal(withPath(dir, () => rowOwnership(row(pane, pid))), "unknown");
+  });
+
+  it("a list-panes that cannot connect (EACCES) is unknown, a missing socket is gone", { skip: !hasTmux && "tmux not installed" }, () => {
+    const refused = fakeFailingTmux({ failOn: "list-panes", stderr: "error connecting to /tmp/tmux-501/default (Permission denied)" });
+    assert.equal(withPath(refused, () => rowOwnership(row(pane, pid))), "unknown");
+    const absent = fakeFailingTmux({ failOn: "list-panes", stderr: "error connecting to /tmp/tmux-501/default (No such file or directory)" });
+    assert.equal(withPath(absent, () => rowOwnership(row(pane, pid))), "gone");
   });
 });

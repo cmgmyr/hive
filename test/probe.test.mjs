@@ -67,14 +67,23 @@ const captureFailPath = `${captureFailBinDir}:${realPath}`;
 
 function withEnv(vars, fn) {
   const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
-  Object.assign(process.env, vars);
-  try {
-    return fn();
-  } finally {
+  const restore = () => {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
+  };
+  Object.assign(process.env, vars);
+  try {
+    const result = fn();
+    if (result !== null && typeof result === "object" && "then" in result) {
+      return Promise.resolve(result).finally(restore);
+    }
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
   }
 }
 
@@ -492,7 +501,7 @@ describe("hive start refuses to duplicate a process it cannot see", { skip: hasT
       HIVE_TEST_UNPROBEABLE: "%9301",
     });
 
-    assert.equal(code, 0, stdout);
+    assert.equal(code, 1, stdout);
     assert.match(stdout, /skipped: tmux could not be probed/);
     assert.equal(agentStatus(existing), "running", "the row must not be closed");
     assert.equal(runningNamed("web").length, 1, "and no second copy may be launched");

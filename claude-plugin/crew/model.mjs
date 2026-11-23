@@ -1,0 +1,162 @@
+export const SCHEMA_VERSION = 1;
+export const REFRESH_MS = 5000;
+export const TIMEOUT_MS = 4000;
+
+export function ago(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
+export async function resolveCwd(isDir, candidates) {
+  const tried = [];
+  for (const candidate of candidates) {
+    let dir;
+    try {
+      dir = await candidate();
+    } catch {
+      continue;
+    }
+    if (typeof dir !== "string" || dir === "" || tried.includes(dir)) continue;
+    tried.push(dir);
+    if (await isDir(dir)) return dir;
+  }
+  throw new Error(`hive crew has no directory to run in (tried ${tried.join(", ") || "none"})`);
+}
+
+export async function pollCrew(run, isDir, state, fallbacks) {
+  state.cwd = await resolveCwd(isDir, [() => state.cwd, ...fallbacks]);
+  return readCrew(run, state.cwd);
+}
+
+export async function readCrew(run, cwd) {
+  let res;
+  try {
+    res = await run(["hive", "crew", "--json"], { cwd, timeoutMs: TIMEOUT_MS });
+  } catch (err) {
+    throw new Error(`hive crew --json in ${cwd} did not answer: ${String(err instanceof Error ? err.message : err).slice(0, 100)}`);
+  }
+  if (res.exitCode !== 0) {
+    const line = String(res.stderr ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "");
+    throw new Error(`exit ${res.exitCode}${line ? `: ${line.slice(0, 120)}` : ""}`);
+  }
+  let snap;
+  try {
+    snap = JSON.parse(res.stdout);
+  } catch {
+    throw new Error("hive crew returned invalid JSON");
+  }
+  if (snap === null || typeof snap !== "object" || snap.schema_version !== SCHEMA_VERSION) {
+    throw new Error(`hive crew schema ${snap?.schema_version ?? "unknown"} is not ${SCHEMA_VERSION}; update hive`);
+  }
+  if (!Array.isArray(snap.lanes) || !Array.isArray(snap.needs_you) || snap.wakes === null || typeof snap.wakes !== "object" || !Array.isArray(snap.wakes.watching)) {
+    throw new Error("hive crew JSON is missing lanes, needs_you or wakes");
+  }
+  return snap;
+}
+
+export function emptyView() {
+  return { header: "", rows: [], needsLabel: "", needsYou: [], footer: [], error: "", memory: {}, noData: true };
+}
+
+export function failedView(previousView, message) {
+  return { ...(previousView ?? emptyView()), error: message };
+}
+
+function duration(worker, activity, nowMs, memory, nextMemory) {
+  const key = `${worker.id}|${worker.session_id}|${activity.label}`;
+  const stamp = activity.since;
+  const at = stamp ? Date.parse(stamp) : NaN;
+  if (Number.isFinite(at)) return `${activity.lower_bound ? ">=" : ""}${ago((nowMs - at) / 1000)}`;
+  const first = memory[key] ?? nowMs;
+  nextMemory[key] = first;
+  return `~${ago((nowMs - first) / 1000)}`;
+}
+
+function workerRow(lane, snapshot, nowMs, memory, nextMemory) {
+  const w = lane.worker;
+  const checkpoint = snapshot.context_checkpoint_percent;
+  const todo = lane.todo;
+  const linkLabel = todo ? todo.slug : lane.pad ? `pad ${lane.pad}` : `${w.name} unlinked`;
+  const state = w.state === "blocked" ? "blocked" : w.your_turn ? "your turn" : w.state;
+  const color = state === "blocked" ? "red" : state === "your turn" ? "yellow" : state === "working" ? "green" : "gray";
+  const fill = w.context_fill;
+  const head = [w.model || w.harness];
+  if (state === "working") head.push(`${w.activity.label} ${duration(w, w.activity, nowMs, memory, nextMemory)}`);
+  else {
+    const since = state === "blocked" ? null : w.state_changed_at;
+    head.push(`${state} ${duration(w, { label: state, since, lower_bound: false }, nowMs, memory, nextMemory)}`);
+    if (state !== "blocked" && w.activity?.label) head.push(w.activity.label);
+  }
+  const tail = [ago(w.age_seconds)];
+  if (w.commits_ahead !== null && w.commits_ahead !== undefined) tail.push(`+${w.commits_ahead} commits`);
+  const amber = Boolean(fill) && checkpoint !== null && checkpoint !== undefined && fill.used_percent >= checkpoint;
+  return rowOf({
+    key: `w${w.id}`,
+    color,
+    id: todo ? String(todo.id) : "--",
+    slug: linkLabel,
+    parts: [
+      { text: `${head.join(" · ")} · ` },
+      { text: fill ? `ctx ${Math.round(fill.used_percent)}%` : "ctx ?", amber },
+      { text: ` · ${tail.join(" · ")}` },
+    ],
+  });
+}
+
+function nextLine(next, nowMs) {
+  if (!next) return "next: none";
+  const label = next.generated ? "crew notice" : next.label;
+  if (next.held) return `held (${next.held}): ${label}`;
+  const due = next.due_at && Number.isFinite(Date.parse(next.due_at)) ? ` in ${ago((Date.parse(next.due_at) - nowMs) / 1000)}` : "";
+  return `next${due}: ${label}`;
+}
+
+function covered(snapshot) {
+  const ids = new Set(snapshot.wakes.watched_worker_ids ?? []);
+  return snapshot.lanes.some((l) => l.worker && ids.has(l.worker.id));
+}
+
+function watchText(w) {
+  const parts = [w.scope === "project" ? "all workers" : w.scope || w.label, "standing"];
+  const until = w.max_wait_at ? new Date(w.max_wait_at) : null;
+  if (until && Number.isFinite(until.getTime())) {
+    parts.push(`until ${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`);
+  }
+  return parts.join(" · ");
+}
+
+function rowOf(row) {
+  return { ...row, detail: row.parts.map((p) => p.text).join("") };
+}
+
+export function buildCrewView(snapshot, previousView, nowMs) {
+  const memory = previousView?.memory ?? {};
+  const nextMemory = {};
+  const rows = snapshot.lanes.map((lane) =>
+    lane.worker
+      ? workerRow(lane, snapshot, nowMs, memory, nextMemory)
+      : rowOf({ key: `t${lane.todo.id}`, color: "gray", id: String(lane.todo.id), slug: lane.todo.slug, parts: [{ text: "unstaffed" }] }),
+  );
+  const { wakes } = snapshot;
+  const workers = snapshot.lanes.filter((l) => l.worker).length;
+  const footer = [{ text: nextLine(wakes.next, nowMs) }];
+  const questionsPending = snapshot.questions?.pending ?? 0;
+  if (questionsPending > 0) footer.push({ text: `questions pending: ${questionsPending}` });
+  if (wakes.watching.length > 0) footer.push({ text: `watching: ${wakes.watching.map(watchText).join(", ")}` });
+  else if (workers > 0 && !covered(snapshot)) footer.push({ text: "unwatched: no standing watch on running workers", amber: true });
+  return {
+    header: [
+      `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,
+      snapshot.needs_you.length > 0 ? `${snapshot.needs_you.length} todo${snapshot.needs_you.length === 1 ? "" : "s"} for you` : "",
+    ].filter(Boolean).join(" · "),
+    rows,
+    needsLabel: snapshot.needs_you.length > 0 ? `todos waiting on you (${snapshot.needs_you.length})` : "todos waiting on you",
+    needsYou: snapshot.needs_you.map((t) => ({ id: String(t.id), slug: t.slug })),
+    footer,
+    error: "",
+    memory: nextMemory,
+    noData: false,
+  };
+}

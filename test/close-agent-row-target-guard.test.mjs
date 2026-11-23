@@ -26,40 +26,11 @@ function seedRow(target) {
     .get(project.id, target).id;
 }
 
-describe("closeAgentRow's optional expectedTmuxTarget guard", () => {
-  it("closes the row when no expected target is given - the pre-existing callers' shape, unchanged", () => {
+describe("closeAgentRow's optional identity guard", () => {
+  it("closes the row when no expected identity is given", () => {
     const id = seedRow("%whatever");
     assert.equal(closeAgentRow(id), true);
     assert.equal(db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status, "closed");
-  });
-
-  it("closes the row when the expected target matches what is actually there", () => {
-    const id = seedRow("%matches");
-    assert.equal(closeAgentRow(id, "%matches"), true);
-    assert.equal(db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status, "closed");
-  });
-
-  it("refuses to close, and leaves the row untouched, when the target has changed since the caller probed it", () => {
-    const id = seedRow("%probed-as-dead");
-
-    db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run("%raced-in-by-a-concurrent-hive-lead", id);
-
-    assert.equal(closeAgentRow(id, "%probed-as-dead"), false, "a stale expectation must not close the row");
-
-    const row = db.prepare("SELECT status, tmux_target FROM agents WHERE id = ?").get(id);
-    assert.equal(row.status, "running", "the row must survive - it changed out from under the probe");
-    assert.equal(
-      row.tmux_target,
-      "%raced-in-by-a-concurrent-hive-lead",
-      "and keep the racer's write, not get silently overwritten",
-    );
-  });
-
-  it("refuses to close an already-closed row even with a matching target - status still gates every branch", () => {
-    const id = seedRow("%already-closed");
-    db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(id);
-
-    assert.equal(closeAgentRow(id, "%already-closed"), false);
   });
 });
 

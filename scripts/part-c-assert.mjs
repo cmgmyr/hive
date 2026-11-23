@@ -1,6 +1,7 @@
-function parseUtcSeconds(sqliteTimestamp) {
+import { parseStoreTimestamp } from "../dist/storeClock.js";
 
-  const epoch = Date.parse(`${sqliteTimestamp.replace(" ", "T")}Z`) / 1000;
+function parseUtcSeconds(sqliteTimestamp) {
+  const epoch = parseStoreTimestamp(sqliteTimestamp) / 1000;
 
   if (!Number.isFinite(epoch)) {
     throw new Error(`FAILS: malformed timestamp "${sqliteTimestamp}" could not be parsed as a UTC datetime.`);

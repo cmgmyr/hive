@@ -1,10 +1,12 @@
-import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { storeDir } from "./dataDir.js";
 import { db } from "./db.js";
-import { LEAD_KIND } from "./spawn.js";
+import { LEAD_KIND } from "./agentKinds.js";
+import { rowOwnership } from "./tmux.js";
+import { recordQueenRefusal, type QueenWriteIdentity } from "./queenAuditStore.js";
+import { gitOut } from "./git.js";
 
 export interface Project {
   id: number;
@@ -35,7 +37,7 @@ export function currentActor(): string {
     return cachedActorId;
   }
   const envId = process.env.HIVE_AGENT_ID;
-  const id = envId ?? `user:${userInfo().username}`;
+  const id = envId ?? `${HUMAN_ACTOR_PREFIX}${userInfo().username}`;
   const name = process.env.HIVE_AGENT_NAME ?? id;
   const kind = envId ? "agent" : "human";
   db.prepare(
@@ -114,18 +116,12 @@ export function registeredAncestor(dir: string): Project | null {
 }
 
 export function gitPrimaryRoot(dir: string): string | null {
-  try {
-    const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...env } = process.env;
-    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-      cwd: dir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2000,
-      env,
-    }).trim();
-    const resolvedCommonDir = resolve(dir, commonDir);
+  const commonDir = gitOut(dir, ["rev-parse", "--git-common-dir"]);
+  if (commonDir === null) return null;
+  const resolvedCommonDir = resolve(dir, commonDir);
 
-    if (basename(resolvedCommonDir) !== ".git") return null;
+  if (basename(resolvedCommonDir) !== ".git") return null;
+  try {
     return realpathSync(dirname(resolvedCommonDir));
   } catch {
     return null;
@@ -133,19 +129,11 @@ export function gitPrimaryRoot(dir: string): string | null {
 }
 
 function gitDirs(dir: string): { gitDir: string; commonDir: string } | null {
+  const result = gitOut(dir, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (result === null) return null;
+  const out = result.split("\n");
+  if (out.length !== 2) return null;
   try {
-
-    const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...env } = process.env;
-    const out = execFileSync("git", ["rev-parse", "--git-dir", "--git-common-dir"], {
-      cwd: dir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2000,
-      env,
-    })
-      .trim()
-      .split("\n");
-    if (out.length !== 2) return null;
     return {
       gitDir: realpathSync(resolve(dir, out[0])),
       commonDir: realpathSync(resolve(dir, out[1])),
@@ -332,15 +320,57 @@ export function isQueenLead(): boolean {
   return queenProjectId() !== null;
 }
 
-export interface QueenWriteIdentity {
-  actor_id: string;
-  home_project_id: number;
-}
+export type { QueenWriteIdentity } from "./queenAuditStore.js";
 
 export function captureQueenWriteIdentity(targetProjectId: number): QueenWriteIdentity | null {
   const home = queenProjectId();
   if (home === null || home === targetProjectId) return null;
   return { actor_id: process.env.HIVE_AGENT_ID!, home_project_id: home };
+}
+
+interface QueenLeadTarget {
+  id: number;
+  project_id: number;
+  name: string;
+  kind: string;
+  status: string;
+  tmux_target: string;
+  tmux_socket: string;
+  pane_pid: string;
+}
+
+export function resolveQueenLeadTarget<T extends QueenLeadTarget>(
+  operation: string,
+  targetProjectId: number,
+  ref: unknown,
+  resolve: () => T,
+): T {
+  if (!captureQueenWriteIdentity(targetProjectId)) return resolve();
+
+  let agent: T;
+  try {
+    agent = resolve();
+  } catch (e) {
+    throw queenRefusal(
+      operation,
+      targetProjectId,
+      `recipient ${JSON.stringify(ref)} could not be resolved: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  const ownership = rowOwnership(agent);
+  const problem =
+    agent.project_id !== targetProjectId
+      ? `Agent ${agent.id} ("${agent.name}") belongs to project ${agent.project_id}, not project ${targetProjectId}`
+      : agent.kind !== LEAD_KIND
+        ? `Agent ${agent.id} ("${agent.name}") is kind "${agent.kind}", not a lead`
+        : agent.status !== "running"
+          ? `Agent ${agent.id} ("${agent.name}") is ${agent.status}, not running`
+          : ownership !== "live"
+            ? `Agent ${agent.id} ("${agent.name}") does not own a live pane (ownership: ${ownership})`
+            : null;
+  if (problem) throw queenRefusal(operation, targetProjectId, problem);
+  return agent;
 }
 
 // Every MCP tool and every target-bearing CLI verb must appear here; an unlisted one refuses for the
@@ -383,10 +413,16 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   todo_unblock: "home",
   kv_set: "home",
   kv_delete: "home",
+  question_ask: "home",
+  question_get: "home",
+  question_list: "home",
+  question_update: "home",
+  question_answer: "home",
   lease_acquire: "home",
   lease_release: "home",
   agent_spawn: "home",
   agent_resume: "home",
+  agent_fork: "home",
   agent_park: "home",
   agent_rename: "home",
   agent_close: "home",
@@ -435,7 +471,7 @@ function foreignWriteProblem(
       if (args.scope !== undefined) return "a standing watch in another project belongs to its lead";
       const lead = runningLead(targetProjectId);
       if (!lead) return "that project has no running lead to address";
-      if (!namesLead(args.deliver_to, lead)) {
+      if (args.deliver_to == null) {
         return `deliver_to must name that project's running lead ("${lead.name}" or agent id ${lead.id})`;
       }
       return null;
@@ -455,8 +491,8 @@ function foreignWriteProblem(
       if (args.keys !== undefined) return "keys can interrupt a lead mid-turn; send text instead";
       const lead = runningLead(targetProjectId);
       if (!lead) return "that project has no running lead to address";
-      if (!namesLead(args.agent_id ?? args.name, lead)) {
-        return `the recipient must be that project's running lead ("${lead.name}" or agent id ${lead.id})`;
+      if (args.agent_id == null && args.name == null) {
+        return `the recipient must name that project's running lead ("${lead.name}" or agent id ${lead.id})`;
       }
       return null;
     }
@@ -502,9 +538,22 @@ export function assertQueenToolCall(tool: string, args: Record<string, unknown>)
 function queenRefusal(operation: string, targetProjectId: number | null, problem: string): Error {
   const target = targetProjectId === null ? null : getProject(targetProjectId);
   const where = target ? `in project ${target.id} ("${target.name}")` : "outside the queen's own project";
-  return new Error(
+  const refusal = new Error(
     `${QUEEN_REFUSAL}: the queen cannot run ${operation} ${where}: ${problem}. Into another project the ` +
       "queen may only todo_create, todo_comment, send text or wakes to its running lead, start its lead " +
       "with `hive lead <path>`, and run project_prune or `hive project rm` on it. Everything else there is its lead's to do.",
   );
+  if (targetProjectId !== null) {
+    const identity = captureQueenWriteIdentity(targetProjectId);
+    if (identity) {
+      try {
+        recordQueenRefusal(operation, targetProjectId, problem, identity);
+      } catch {
+        // A refusal must survive an unavailable audit write.
+      }
+    }
+  }
+  return refusal;
 }
+
+export const HUMAN_ACTOR_PREFIX = "user:";

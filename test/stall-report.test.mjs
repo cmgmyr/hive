@@ -263,6 +263,54 @@ describe("the stall detector reports a worker whose transcript has gone quiet", 
     assert.equal(result.cursor, 1, "still one claim row - it was re-armed in place, not duplicated");
   });
 
+  it("re-files a spent untyped episode for a waiting worker without repeating a typed notice", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+    const result = fixture(
+      "waiting-delivery-failure",
+      `
+      const { createWindow, ensureSession, liveTargets, tmux } = await import(${JSON.stringify(join(DIST, "tmux.js"))});
+      const session = 'stall-waiting-' + process.pid;
+      ensureSession(session, '/tmp', null);
+      createWindow(session, 'worker', '/tmp', [], 'sleep 600', project);
+      const workerPane = tmux('list-panes', '-t', '=' + session + ':worker', '-F', '#{pane_id}').trim();
+      const workerPid = tmux('display-message', '-p', '-t', workerPane, '#{pane_pid}');
+      const workerId = addWorker('agent:1', 'stuck', workerPane, 'waiting', '-3600 seconds');
+      db.prepare("UPDATE agents SET pane_pid = ?, created_at = datetime('now') WHERE id = ?").run(workerPid, workerId);
+      writeTranscript('/tmp/wk', 'sid-stuck', ${STALE});
+      const watchId = addStandingWatch();
+      try {
+        const paneSnapshot = liveTargets();
+        if (paneSnapshot === null) throw new Error('the private tmux snapshot must be readable');
+        await tick(paneSnapshot);
+        const first = notices(watchId);
+        const firstBlockClaim = blockCursor();
+
+        db.prepare("UPDATE wakes SET fired_at = datetime('now', '-120 seconds'), typed_at = datetime('now') WHERE id = ?")
+          .run(first[0].id);
+        await tick(paneSnapshot);
+        const afterTyped = notices(watchId).length;
+
+        db.prepare("UPDATE wakes SET fired_at = datetime('now', '-120 seconds'), typed_at = NULL WHERE id = ?")
+          .run(first[0].id);
+        await tick(paneSnapshot);
+
+        const blocks = blockCursor();
+        const episodes = db.prepare("SELECT agent_id, condition, episode, notice_wake_id FROM wake_idle_notices WHERE agent_id = ?").all(workerId);
+        ${out(`{ first: first.length, afterTyped, notices: notices(watchId).length, episodes, blocks, firstBlockClaim }`)}
+      } finally {
+        tmux('kill-session', '-t', '=' + session);
+      }
+      `,
+    );
+
+    assert.equal(result.first, 1);
+    assert.equal(result.firstBlockClaim.length, 1, JSON.stringify(result));
+    assert.equal(result.afterTyped, 1, "a typed notice is not filed again");
+    assert.equal(result.notices, 2, "the lost report is filed again rather than silently dropped");
+    assert.equal(result.episodes.length, 1, "still one claim row - it was re-armed in place, not duplicated");
+    assert.equal(result.episodes[0].condition, "stall");
+    assert.equal(result.blocks.length, 1, "retry does not add or clear the block-ledger claim");
+  });
+
   it("claims nothing when there is nobody to tell, and still reports once a target is live", () => {
     const result = fixture(
       "nobody-to-tell",

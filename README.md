@@ -5,13 +5,13 @@ Run a crew of Claude Code and Codex workers from one lead session: visible tmux 
 
 - Visible workers: each one is a real tmux pane you can read and type into.
 - Exact state: workers report it through their own CLI's hooks, so nothing polls.
-- One local SQLite store: no daemon, and nothing leaves your machine.
+- One local SQLite store: no daemon. The MCP server, hooks, and scheduler make no outbound requests; the CLI contacts npm only to check for updates, and upgrades can download ([details](docs/security.md)).
 
 ![hive: a lead plans, spawns workers, and is woken when they finish](https://raw.githubusercontent.com/cmgmyr/hive/main/docs/assets/demo.svg)
 
 ## Install
 
-Requirements: Node `^22.14.0 || >=23.6.0`, Claude Code or Codex, and tmux for the agent tools. Claude is the default. Hive is dogfooded on macOS; Linux runs in CI, but interactive Linux/WSL behavior has less coverage.
+Requirements: Node `^22.14.0 || >=23.6.0`, Claude Code or Codex, and tmux for the agent tools. Claude is the default. Hive is dogfooded on macOS; Linux runs in CI, but interactive Linux/WSL behavior has less coverage. New here? Start with the [quick start](docs/quickstart.md).
 
 ```bash
 npm install -g @cmgmyr/hive
@@ -56,7 +56,7 @@ Run `cd ~/Code/your-project && hive`. It is shorthand for `hive lead`, and it op
 
 ## How it works
 
-Each Claude Code or Codex session runs its own `hive` MCP server over stdio, and every instance reads and writes one SQLite database (WAL mode) at `~/.hive/hive.db`, so every session sees the same state. There is no daemon and nothing leaves your machine. State is scoped to a project (a directory), resolved from the working directory; a lead spawns workers into tmux panes locked to that project.
+Each Claude Code or Codex session runs its own `hive` MCP server over stdio, and every instance reads and writes one SQLite database (WAL mode) at `~/.hive/hive.db`, so every session sees the same state. There is no daemon. The MCP server, hooks, and scheduler make no outbound requests; the CLI contacts npm only to check for updates, and upgrades can download ([details](docs/security.md)). State is scoped to a project (a directory), resolved from the working directory; a lead spawns workers into tmux panes locked to that project.
 
 ## Why not subagents?
 
@@ -73,6 +73,8 @@ Hive workers can still use subagents. See [Why not subagents?](docs/concepts.md#
 
 If you keep more than one project registered, `hive queen` starts a single lead that reads all of them. `hive portfolio` sorts them into waiting on you, stuck, moving and quiet, and `hive next` attaches you to the lead that needs you most. The queen writes into another project only through that project's lead, and hive records each write. [The queen guide](docs/queen.md) covers setup and limits.
 
+Move a registered checkout with `hive project mv <new-path>`. It previews by default; pass `--apply` to move the checkout or repair records after a hand move. Claude and Codex must be closed while applying. Codex sessions saved under the old path remain available with `codex resume --all`.
+
 ## Status
 
 hive is a personal daily-driver tool, released low-key. It is single-user by design and dogfooded daily by its author on macOS. The test suite also runs on Linux in CI, but nobody drives hive there yet. Issues are welcome; for bigger changes, open a discussion first. See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
@@ -81,7 +83,8 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 
 | Page | What's there |
 |---|---|
-| [Architecture](docs/architecture.md) | Seven diagrams: process topology, module layering, spawn sequence, wake lifecycle, worker state, project scoping, store and server identity |
+| [Quick start](docs/quickstart.md) | Zero to a running lead and first worker: requirements, install, the config keys you will touch, first-run fixes |
+| [Architecture](docs/architecture.md) | Eight diagrams: process topology, module layering, spawn sequence, wake lifecycle, worker state (with the lead handoff), project scoping, store and server identity |
 | [Patterns](docs/patterns.md) | Standing trades, refused approaches, evidence standards, and guard shapes distilled from the project's own decisions and dead-ends |
 | [Concepts](docs/concepts.md) | Vocabulary, why not subagents, identity, the workflow, project scope, the shared store |
 | [Daily driver](docs/daily-driver.md) | A day with hive, starting a session, watching workers, wake-ups |
@@ -90,9 +93,11 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 | [Configuration](docs/configuration.md) | The `HIVE_*` environment variables |
 | [Profiles](docs/profiles.md) | Standing instructions across projects, the session-start plugin |
 | [Projects](docs/projects.md) | `hive init`, `hive.yml`, automatic backups, pads and todos from the shell |
+| [Crew sidebar](docs/crew.md) | `lead_sidebar`: a crew pane in a Claude lead, and the read-only `hive crew --json` behind it |
 | [Dashboard](docs/dashboard.md) | The generated dashboard: enabling it, where it lives, what it shows |
 | [Install details](docs/install.md) | The interpreter pin, iTerm settings, the status line, MCP scope, codex workers, updating, uninstalling |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and their fixes |
+| [Security](docs/security.md) | What hive runs, writes and fetches on your machine, with the code to check |
 | [Tools](docs/tools.md) | The MCP tools: what each does and when to use it |
 | [tmux settings](docs/tmux.md) | Attach modes, pane options, and what to put in `~/.tmux.conf` |
 | [Development](docs/development.md) | Building and testing hive itself |

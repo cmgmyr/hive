@@ -16,14 +16,18 @@ if (!db.name.startsWith(dirs.dataDir)) throw new Error(`refusing: opened ${db.na
 
 migrate();
 
-const LAST_VERSION = MIGRATIONS.length;
-
-db.prepare("DELETE FROM migrations WHERE version = ?").run(LAST_VERSION);
+const FAILURE_SQL = "ALTER TABLE agents ADD COLUMN name TEXT;";
+const FAILURE_VERSION = MIGRATIONS.length + 1;
 db.close();
 
 const DB_JS_URL = pathToFileURL(join(REPO, "dist", "db.js")).href;
 const script = join(dirs.tmp, "migrate-fail.mjs");
-writeFileSync(script, `import { migrate } from ${JSON.stringify(DB_JS_URL)};\nmigrate();\n`);
+writeFileSync(
+  script,
+  `import { migrate, MIGRATIONS } from ${JSON.stringify(DB_JS_URL)};\n` +
+    `MIGRATIONS.push(${JSON.stringify(FAILURE_SQL)});\n` +
+    "migrate();\n",
+);
 
 const result = spawnSync(process.execPath, [script], {
   encoding: "utf8",
@@ -37,10 +41,10 @@ describe("a migration that fails for a reason other than SQLITE_BUSY (todo 1493)
 
   it("names the pending-migrations step and the failing migration's version", () => {
     assert.match(result.stderr, /applying pending migrations failed/);
-    assert.match(result.stderr, new RegExp(`migration ${LAST_VERSION}\\b`));
+    assert.match(result.stderr, new RegExp(`migration ${FAILURE_VERSION}\\b`));
   });
 
-  it("carries the underlying SQL error of re-running the last migration", () => {
+  it("carries the underlying SQL error from the failing migration", () => {
     assert.match(result.stderr, /duplicate column name|already exists/);
   });
 

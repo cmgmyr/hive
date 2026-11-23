@@ -28,7 +28,7 @@ Report a failing result as failing. A clean status line is not evidence by
 itself.
 ```
 
-For orchestration, add the same obligation to `worker.md`'s completion section rather than only the lead's runbook, since it is the worker who reports done.
+On the shipped orchestration base, the runbook's CHECKS section already renders `check`, `test_command` and `verify_command` when they are set, and `worker.md` already asks for the named checks before a handback. So there, set the vars and add this block only if the user's own runbook lacks a completion step. For a forked or hand-written orchestration profile, add the same obligation to `worker.md`'s completion section rather than only the lead's runbook, since it is the worker who reports done.
 
 ```yaml
 vars:
@@ -38,7 +38,7 @@ vars:
 
 ## Verify
 
-Run `hive runbook` (and `hive posture` for the worker copy, on orchestration) and confirm both commands render. Then exercise it for real: pick a harmless, already-working change and confirm the block actually gets run and its result gets reported, not just written down.
+Run `hive runbook` and confirm both commands render. On orchestration, also run `hive profile read worker.md` and confirm the worker text carries the check obligation. Never use `hive posture` for the worker copy: it prints the lead's file only. Then exercise it for real: pick a harmless, already-working change and confirm the block actually gets run and its result gets reported, not just written down.
 
 ## Remove
 

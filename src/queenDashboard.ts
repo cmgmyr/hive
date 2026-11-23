@@ -2,8 +2,10 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { db } from "./db.js";
+import { SECTION_STYLE, SPRITE, chevron, renderBoardPadsTodos, sectionScript } from "./dashboard.js";
 import type { QueenAuditRow } from "./queenAudit.js";
 import type { PortfolioLane, PortfolioProject, PortfolioReason, PortfolioReport } from "./portfolio.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 export const QUEEN_BRIEF_KEY = "queen:brief";
 
@@ -106,6 +108,7 @@ const LANE_COLOR: Record<PortfolioLane, string> = {
 };
 const REASON_LABEL: Record<PortfolioReason, string> = {
   needs_human: "Needs-human todo",
+  questions_pending: "Pending question",
   dead_lead_pane: "Lead pane is dead",
   missing_root_with_work: "Project folder is missing",
   worker_needs_input: "A worker is waiting for input",
@@ -125,7 +128,7 @@ const REASON_SEVERE: ReadonlySet<PortfolioReason> = new Set([
 ]);
 
 function parseUtc(ts: string): number {
-  return Date.parse(`${ts.replace(" ", "T")}Z`);
+  return parseStoreTimestamp(ts);
 }
 
 function age(from: string, asOf: string): string {
@@ -181,6 +184,8 @@ function leadPill(p: PortfolioProject): string {
       return `<span class="status status-ok">lead up</span>${turnPill(p)}`;
     case "dead_pane":
       return '<span class="status status-fail">lead dead</span>';
+    case "dormant":
+      return '<span class="status status-off">lead dormant</span>';
     case "unknown":
       return '<span class="status status-off">lead unknown</span>';
     default:
@@ -231,10 +236,13 @@ function footCounts(p: PortfolioProject, asOf: string, rank: number): string {
 }
 
 function movingBadges(p: PortfolioProject): string {
-  if (p.lane !== "moving") return "";
+  const questions = p.questions_pending > 0
+    ? `<span class="n-questions">${p.questions_pending} question${p.questions_pending === 1 ? "" : "s"}</span>`
+    : "";
   return (
-    (p.needs_human > 0 ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
-    (p.todos.blocked_in_progress > 0 ? `<span class="n-muted">${p.todos.blocked_in_progress} blocked</span>` : "")
+    (p.lane === "moving" && p.needs_human > 0 ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
+    questions +
+    (p.lane === "moving" && p.todos.blocked_in_progress > 0 ? `<span class="n-muted">${p.todos.blocked_in_progress} blocked</span>` : "")
   );
 }
 
@@ -256,7 +264,7 @@ function card(
     items.push(`<li><span class="ref">+${p.needs_human - p.needs_human_items.length} more</span></li>`);
   }
   for (const r of p.reasons) {
-    if (r === "needs_human" || r === "quiet") continue;
+    if (r === "needs_human" || r === "questions_pending" || r === "quiet") continue;
     const cls = REASON_SEVERE.has(r) ? " age-fail" : "";
     items.push(`<li><span class="${cls.trim()}">${esc(REASON_LABEL[r])}</span></li>`);
   }
@@ -283,7 +291,7 @@ function quietList(
     '<section class="card"><ul class="quiet-list">' +
     list
       .map((p) => {
-        const sub = `${p.lead.state === "alive" ? (turnText(p) ? `lead up, ${turnText(p)}` : "lead up") : p.lead.state === "dead_pane" ? "lead dead" : p.lead.state === "unknown" ? "lead unknown" : "no lead"}, ${p.todos.open} open`;
+        const sub = `${p.lead.state === "alive" ? (turnText(p) ? `lead up, ${turnText(p)}` : "lead up") : p.lead.state === "dead_pane" ? "lead dead" : p.lead.state === "dormant" ? "lead dormant" : p.lead.state === "unknown" ? "lead unknown" : "no lead"}, ${p.todos.open} open`;
         return (
           `<li data-project="${p.id}"><span>${projectLink(p, href)}` +
           `<a class="sub" href="#row-${p.id}" data-jump="${p.id}">${esc(sub)}</a></span>` +
@@ -305,13 +313,16 @@ function gridRow(p: PortfolioProject, asOf: string, href: (p: PortfolioProject) 
     `<span class="c-work">${workersCell(p)}</span>` +
     `<span class="c-n g-num">${num(t.open)}</span><span class="c-n g-num">${num(t.in_progress)}</span>` +
     `<span class="c-n g-num">${num(t.blocked, "n-blocked")}</span><span class="c-n g-num">${num(t.high, "n-high")}</span>` +
-    `<span class="c-n g-num">${num(p.needs_human, "n-needs")}</span><span class="c-n g-num c-wake">${wakesCell(p)}</span>` +
+    `<span class="c-n g-num">${num(p.needs_human, "n-needs")}</span>` +
+    `<span class="c-n g-num">${num(p.questions_pending, "n-questions")}</span>` +
+    `<span class="c-n g-num c-wake">${wakesCell(p)}</span>` +
     `<span class="c-last g-num age">${esc(age(p.last_activity_at, asOf))}</span>` +
     '<span class="c-nums">' +
     `<span>${t.open} open</span><span>${t.in_progress} doing</span>` +
     (t.blocked ? `<span class="n-blocked">${t.blocked} blocked</span>` : "") +
     (t.high ? `<span class="n-high">${t.high} high</span>` : "") +
     (p.needs_human ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
+    (p.questions_pending ? `<span class="n-questions">${p.questions_pending} question${p.questions_pending === 1 ? "" : "s"}</span>` : "") +
     wakesText(p) +
     "</span></div>"
   );
@@ -320,7 +331,7 @@ function gridRow(p: PortfolioProject, asOf: string, href: (p: PortfolioProject) 
 const GRID_HEAD =
   '<div class="g-row g-head" role="row"><span>Project</span><span>Lead</span><span>Workers</span>' +
   '<span class="g-num">Open</span><span class="g-num">Doing</span><span class="g-num">Blocked</span>' +
-  '<span class="g-num">High</span><span class="g-num">Needs you</span><span class="g-num c-wake">Wakes</span>' +
+  '<span class="g-num">High</span><span class="g-num">Needs you</span><span class="g-num">Questions</span><span class="g-num c-wake">Wakes</span>' +
   '<span class="g-num">Last seen</span></div>';
 
 function laneName(lane: PortfolioLane): string {
@@ -395,7 +406,7 @@ function briefSection(
   );
 }
 
-const CSS = `
+const CSS = `${SECTION_STYLE}
 :root { color-scheme: light;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -407,7 +418,7 @@ const CSS = `
   --accent: #1f5fd0; --focus: #1f5fd0; --hover: #f1f4f8;
   --shadow: 0 1px 2px rgba(19, 26, 38, 0.06), 0 2px 8px rgba(19, 26, 38, 0.05);
   --card-border: transparent; --r-card: 14px; --r-ctl: 9px; --r-pill: 999px;
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); }
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --header-offset: 5rem; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { color-scheme: dark;
     --bg: #101317; --panel: #171b21; --panel-sunken: #1c2129;
@@ -463,7 +474,7 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .drift { margin: 0.5rem 0 0; grid-column: 1 / -1; padding: 0.55rem 0.75rem; border-radius: var(--r-ctl); background: var(--warn-bg); color: var(--fg); font-size: 0.8125rem; }
 .drift strong { color: var(--warn); font-weight: 650; }
 .grid { display: grid; }
-.g-row { display: grid; grid-template-columns: minmax(8.5rem, 1.3fr) 10.5rem minmax(8rem, 1.2fr) repeat(4, 3.2rem) 4.6rem 5.2rem 5.6rem; align-items: center; gap: 0.6rem; padding: 0.5rem 1.1rem; border-top: 1px solid var(--border); font-size: 0.875rem; }
+.g-row { display: grid; grid-template-columns: minmax(8.5rem, 1.3fr) 10.5rem minmax(8rem, 1.2fr) repeat(4, 3.2rem) 4.6rem 4.6rem 5.2rem 5.6rem; align-items: center; gap: 0.6rem; padding: 0.5rem 1.1rem; border-top: 1px solid var(--border); font-size: 0.875rem; }
 .g-row:hover:not(.g-head) { background: var(--hover); }
 .g-head { font-size: 0.75rem; color: var(--fg-subtle); font-weight: 550; border-top: 0; padding-block: 0.2rem 0.4rem; }
 .g-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
@@ -501,7 +512,7 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .c-brief li { counter-increment: pick; font-size: 0.875rem; min-width: 0; overflow-wrap: anywhere; }
 .c-brief li::before { content: counter(pick); font-family: var(--font-mono); font-weight: 650; color: var(--accent); margin-right: 0.4rem; }
 .c-brief .why { display: block; color: var(--fg-muted); font-size: 0.8125rem; margin-top: 0.15rem; }
-.brief-summary, .brief-empty { margin: 0; font-size: 0.875rem; color: var(--fg-muted); grid-column: 2; }
+.brief-summary, .brief-empty { margin: 0; font-size: 0.875rem; color: var(--fg-muted); grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
 .brief-summary { color: var(--fg); }
 @media (max-width: 52rem) {
   .c-brief { grid-template-columns: minmax(0, 1fr); }
@@ -535,17 +546,22 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 a.sub:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .turn { font-size: 0.75rem; color: var(--fg-muted); }
 .turn-work { color: var(--live); }
-.c-audit { margin-top: 1.5rem; padding-bottom: 0.85rem; }
+.c-audit { margin-top: 1.5rem; }
+.c-audit[open] { padding-bottom: 0.85rem; }
+details.card:not([open]) > .card-head { padding-bottom: 0.9rem; }
 .c-audit .audit-list, .c-audit .brief-empty { padding: 0 1.1rem; }
 .audit-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.4rem; font-size: 0.8125rem; }
 .audit-list li { display: flex; flex-wrap: wrap; gap: 0.15rem 0.75rem; align-items: baseline; }
 .audit-op { font-weight: 600; }
 .audit-sum { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
 .d-grid { margin-top: 1.5rem; }
+.card-head > .chev { margin-left: auto; }
+.home { margin-top: 1.5rem; }
+.home-head { padding: 0 0.2rem 0.6rem; }
 .d-grid .g-row:not(.g-head) { box-shadow: inset 3px 0 0 var(--lane, transparent); }
 .d-grid .g-row { scroll-margin-top: 6rem; transition: background-color 600ms ease; }
 .d-grid .g-row.is-flash { background: var(--live-bg); transition: none; }
-.empty { margin-top: 1.25rem; padding: 1.25rem 1.1rem; color: var(--fg-muted); }
+.no-projects { margin-top: 1.25rem; padding: 1.25rem 1.1rem; color: var(--fg-muted); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
 
@@ -562,11 +578,17 @@ const SCRIPT = `(function () {
     var row = document.getElementById("row-" + j.getAttribute("data-jump"));
     if (!row) return;
     e.preventDefault();
+    var box = row.closest("details");
+    if (box) box.open = true;
     var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     row.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
     row.classList.add("is-flash");
     setTimeout(function () { row.classList.remove("is-flash"); }, 900);
   });
+})();`;
+
+const SECTIONS_SCRIPT = `(function () {
+${sectionScript("hive-queen-state")}
 })();`;
 
 const MARK =
@@ -590,7 +612,7 @@ function auditSection(audit: QueenAuditRow[], report: PortfolioReport): string {
         .join("") +
       "</ul>"
     : '<p class="brief-empty">No queen actions recorded yet.</p>';
-  return `<section class="card c-audit"><div class="card-head"><h2>Recent queen actions</h2><span class="card-sub">the newest writes the queen made into other projects</span></div>${body}</section>`;
+  return `<details class="card c-audit" id="queen-recent-actions" open><summary class="card-head"><h2>Recent queen actions</h2><span class="card-sub">the newest writes the queen made into other projects</span>${chevron()}</summary>${body}</details>`;
 }
 
 export function renderQueenDashboard(
@@ -628,26 +650,32 @@ export function renderQueenDashboard(
     );
   }).join("");
 
+  const home =
+    queenHomeId === null
+      ? ""
+      : `<div class="home"><div class="home-head"><h2>Queen home project</h2></div>${renderBoardPadsTodos(queenHomeId)}</div>`;
+
   const main =
     n === 0
-      ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card empty"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
+      ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card no-projects"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
       : `${briefSection(briefState, report, href, queenHomeId)}<div class="lanes">${lanes}</div>` +
-        `<section class="card d-grid"><div class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
-        '<span class="card-sub">in lane order; a name opens that project’s dashboard</span></div>' +
+        `<details class="card d-grid" id="queen-every-project" open><summary class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
+        `<span class="card-sub">in lane order; a name opens that project’s dashboard</span>${chevron()}</summary>` +
         `<div class="grid" role="table">${GRID_HEAD}${ordered.map((p) => gridRow(p, asOf, href)).join("")}</div>` +
-        '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></section>' +
-        auditSection(audit, report);
+        '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></details>';
+  const page = main + home + (n === 0 ? "" : auditSection(audit, report));
 
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' +
     `<title>All projects</title><style>${CSS}</style></head><body>` +
+    SPRITE +
     `<svg style="position:absolute;width:0;height:0" aria-hidden="true"><defs>${MARK}</defs></svg>` +
-    '<header class="topbar"><div class="wrap topbar-inner"><div class="brand">' +
+    '<header class="topbar" id="topbar"><div class="wrap topbar-inner"><div class="brand">' +
     '<svg class="mark" role="img" aria-label="hive"><use href="#mark"/></svg><div><h1>All projects</h1>' +
     `<p class="generated" ${QUEEN_GENERATED_MARKER}>Live rows as of ${esc(asOf)} UTC. ${n} project${n === 1 ? "" : "s"} on this machine.</p></div></div>` +
     '<label class="live-toggle" title="Off stops this page reloading. The scheduler still rewrites the file.">' +
     '<input type="checkbox" id="autoreload"> Reload every minute</label></div></header>' +
-    `<main class="wrap">${main}</main><script>${SCRIPT}</script></body></html>\n`
+    `<main class="wrap">${page}</main><script>${SCRIPT}\n${SECTIONS_SCRIPT}</script></body></html>\n`
   );
 }

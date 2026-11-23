@@ -382,8 +382,8 @@ describe("mergedBriefVars", () => {
       supportsRename: false,
       classifiesPaneScreen: false,
       paneClassifier: null,
-      hasScopes: false,
       needsHome: false,
+      workerPaneEnv: {},
       initialPromptArgs: null,
     };
     registerHarness(stub);

@@ -15,7 +15,7 @@ import { basename, dirname, join } from "node:path";
 import { isMap, parse, parseDocument } from "yaml";
 
 import { storeDir } from "./dataDir.js";
-import { errorMessage } from "./result.js";
+import { errorMessage } from "./errors.js";
 
 export type ConfigSource = "env" | "project" | "global" | "built-in";
 export type AttachMode = "auto" | "raw" | "control";

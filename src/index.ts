@@ -10,10 +10,12 @@ import { registerTodos } from "./tools/todos.js";
 import { registerKv } from "./tools/kv.js";
 import { registerLeases } from "./tools/leases.js";
 import { registerWakes } from "./tools/wakes.js";
+import { registerQuestions } from "./tools/questions.js";
 import { registerQueenAudit } from "./tools/queenAudit.js";
 import { registerPrompts } from "./prompts.js";
 import { schedulerIntervalMs, startScheduler } from "./scheduler.js";
 import { enforceStrictInput } from "./strictInput.js";
+import { hiveVersion } from "./version.js";
 
 migrate();
 
@@ -23,7 +25,7 @@ const SCOPE_DISCIPLINE = isQueenLead()
 
 const server = enforceStrictInput(
   new McpServer(
-    { name: "hive", version: "0.1.0" },
+    { name: "hive", version: hiveVersion() },
     {
       instructions: `Hive gives Claude Code sessions shared, persistent state for coordinating work on a project: pads for plans and findings, todos for tracked work with blockers, kv for small shared values, leases for claiming shared state, agents for spawning and directing other sessions, and wake-ups for scheduled or idle-triggered check-ins. Search for these tools when a task needs to persist past this conversation, hand off to or watch another session, or track multi-step work with dependencies.
 Getting started:
@@ -44,6 +46,7 @@ registerTodos(server);
 registerKv(server);
 registerLeases(server);
 registerWakes(server);
+registerQuestions(server);
 registerQueenAudit(server);
 registerPrompts(server);
 startScheduler(schedulerIntervalMs());

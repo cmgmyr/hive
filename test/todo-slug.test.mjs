@@ -145,13 +145,27 @@ describe("todo slug (todo 318)", () => {
     assert.equal(detail.slug, title, "a cleared slug must read as the same fallback fallbackSlug(title) computes");
   });
 
-  it("refuses a slug over the length bound", async () => {
+  it("todo_create cuts an over-long slug at a word boundary and reports it", async () => {
+    const slug = "word ".repeat(8) + "tail123";
+    assert.equal([...slug].length, 47);
+    const created = await mcp.call("todo_create", { title: "x", slug });
+    const stored = "word ".repeat(7) + "word";
+    assert.equal(created.slug_truncated, stored);
+    assert.equal((await mcp.call("todo_get", { todo_id: created.todo_id })).slug, stored);
+  });
 
-    const tooLong = "a".repeat(41);
-    await assert.rejects(
-      () => mcp.call("todo_create", { title: "x", slug: tooLong }),
-      /too_big|40/i,
-    );
+  it("todo_update cuts a slug when a separator lands exactly at the limit", async () => {
+    const { todo_id } = await mcp.call("todo_create", { title: "x" });
+    const slug = `${"a".repeat(40)} b`;
+    const updated = await mcp.call("todo_update", { todo_id, slug });
+    assert.equal(updated.slug_truncated, "a".repeat(40));
+    assert.equal((await mcp.call("todo_get", { todo_id })).slug, "a".repeat(40));
+  });
+
+  it("todo_create hard-cuts an over-long first slug word", async () => {
+    const created = await mcp.call("todo_create", { title: "x", slug: "a".repeat(45) });
+    assert.equal(created.slug_truncated, "a".repeat(40));
+    assert.equal((await mcp.call("todo_get", { todo_id: created.todo_id })).slug, "a".repeat(40));
   });
 
   it("refuses a slug containing a control character", async () => {

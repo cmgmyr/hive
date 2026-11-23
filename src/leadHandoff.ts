@@ -1,0 +1,842 @@
+import { createHash } from "node:crypto";
+import { db } from "./db.js";
+import { MESSAGE_RETENTION, MESSAGE_STATUS } from "./leadMessage.js";
+import {
+  HELD_REASON_HANDOFF,
+  LOG_RETENTION,
+  handoffSocketInFlightWhere,
+  pendingOneShotWhere,
+} from "./wakeSql.js";
+import { harnessFor, paneClassifierFor } from "./harnesses.js";
+import {
+  casHandoff,
+  clearHandoffWait,
+  type HandoffReason,
+  type HandoffRow,
+  type HandoffState,
+  handoffHoldsAutomation,
+  nowSql,
+  olderThan,
+  PASS_TIMEOUT_SECONDS,
+  PRE_RESPAWN_STATES,
+  passPolicy,
+  quotedPolicy,
+  readActiveHandoff,
+  readHandoff,
+  STOP_HOLD_CAP_SECONDS,
+  SUCCESSOR_NOT_READY,
+} from "./leadHandoffState.js";
+import { holdsHumanInput, paneInCopyMode, rowOwnership, tmuxSocketPath } from "./tmux.js";
+import { type LeadSafetySnapshot, type LeadTurnState, readLeadSafetySnapshot } from "./leadState.js";
+import type { LeadTurnBudget } from "./projectYml.js";
+import { readTurnCount } from "./turnCount.js";
+import { describeOneTask, liveBackgroundTasks } from "./backgroundTasks.js";
+
+// Tests read these through this module; the leaf owns them.
+export {
+  casHandoff,
+  HELD_REASON_HANDOFF,
+  handoffHoldsWake,
+  readActiveHandoff,
+  readHandoff,
+  readHandoffGate,
+  SUCCESSOR_NOT_READY,
+} from "./leadHandoffState.js";
+
+export const HANDOFF_PAD_NAME = "hive-lead-handoff";
+
+export const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+function autoHandoffEnabled(budget: LeadTurnBudget | null): boolean {
+  return budget !== null && (budget.auto_handoff ?? true);
+}
+
+export interface LeadForHandoff {
+  id: number;
+  project_id: number;
+  command: string;
+  pane_pid: string;
+  tmux_target: string;
+  tmux_socket: string;
+}
+
+export type Eligibility =
+  | { eligible: true; reason: HandoffReason; turns: number; epoch: { pane_pid: string; session_id: string } }
+  | { eligible: false; why: string };
+
+export function handoffHarnessProblem(lead: Pick<LeadForHandoff, "command">): string | null {
+  return harnessFor(lead.command).name === "claude" ? null
+    : "handoff needs a Claude lead: it waits on Claude Code's Stop-hook evidence, which a Codex lead does not write";
+}
+
+export function handoffEligibility(
+  lead: LeadForHandoff,
+  budget: LeadTurnBudget | null,
+  snapshot: (LeadTurnState & LeadSafetySnapshot) | null = readLeadSafetySnapshot(lead.id),
+): Eligibility {
+  if (budget === null || !autoHandoffEnabled(budget)) return { eligible: false, why: "auto_handoff is not enabled" };
+  if (handoffHarnessProblem(lead) !== null) return { eligible: false, why: "the lead is not a Claude lead" };
+  if (lead.pane_pid === "") return { eligible: false, why: "the lead's pane pid is unknown" };
+  if (
+    snapshot === null ||
+    snapshot.session_id === "" ||
+    snapshot.pane_pid !== lead.pane_pid ||
+    snapshot.snapshot_pane_pid !== lead.pane_pid ||
+    snapshot.snapshot_session_id !== snapshot.session_id
+  ) {
+    return { eligible: false, why: "the lead's current epoch is unknown" };
+  }
+  const turns = readTurnCount(snapshot.transcript_path);
+  if (turns === null) return { eligible: false, why: "the lead's turn count is unavailable" };
+  if (turns < budget.warn) return { eligible: false, why: "below the warn budget" };
+  return {
+    eligible: true,
+    reason: turns >= budget.stop ? "stop" : "warn",
+    turns,
+    epoch: { pane_pid: lead.pane_pid, session_id: snapshot.session_id },
+  };
+}
+
+function artifactWatchUrl(task: { type?: unknown; status?: unknown; description?: unknown } | null): string | null {
+  if (task?.type !== "monitor" || task.status !== "running" || typeof task.description !== "string") return null;
+  return /^live updates for artifact (https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+) \((.+)\)$/.exec(task.description)?.[1] ?? null;
+}
+
+// Artifact live-update watches are restored by the successor; all other live work vetoes respawn.
+export function backgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | null): string | null {
+  if (snapshot === null || snapshot.snapshot_session_id !== snapshot.session_id || snapshot.session_id === "") {
+    return "no background evidence for the current session";
+  }
+  if (snapshot.stop_prompt_seq === null) return "no completed turn yet in this session";
+  if (snapshot.stop_prompt_seq !== snapshot.prompt_seq) return "a turn started after the last completed one";
+  if (snapshot.stop_background === null) return "the last completed turn reported no background-task evidence";
+  let live: { type: string; status?: string; description?: string }[];
+  try {
+    live = (JSON.parse(snapshot.stop_background) as typeof live).filter((task) => artifactWatchUrl(task) === null);
+  } catch {
+    return "the background-task evidence is unreadable";
+  }
+  if (live.length > 0) {
+    const types = [...new Set(live.map((t) => t.type || "unknown"))].sort().join(", ");
+    return `${live.length} background task${live.length === 1 ? "" : "s"} still live (${types})`;
+  }
+  return null;
+}
+
+export function requestBackgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | null): string | null {
+  if (snapshot?.stop_background == null) return backgroundVeto(snapshot);
+  try {
+    const tasks = JSON.parse(snapshot.stop_background) as { type: string }[];
+    return backgroundVeto({ ...snapshot, stop_background: JSON.stringify(tasks.filter((task) => task.type !== "monitor")) });
+  } catch {
+    return "the background-task evidence is unreadable";
+  }
+}
+
+export interface ArmInput {
+  lead: LeadForHandoff;
+  ownerActor: string;
+  reason: HandoffReason;
+  epoch: { pane_pid: string; session_id: string };
+  requestBody: (requestId: number) => string;
+}
+
+// One request and one request wake per epoch. The wake carries no due_at: the scheduler sets it
+// when the pass's quiet rule allows, so nothing ordinary can deliver it early.
+const armTransaction = db.transaction((input: ArmInput): { requestId: number; created: boolean } => {
+  const inserted = db
+    .prepare(
+      `INSERT INTO lead_handoffs (project_id, lead_agent_id, pane_target, tmux_socket, predecessor_pane_pid,
+         predecessor_session_id, reason, state, pass, pass_started_at, hold_since)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, strftime('%Y-%m-%d %H:%M:%f', 'now'),
+         CASE WHEN ? = 'stop' THEN strftime('%Y-%m-%d %H:%M:%f', 'now') END)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+    )
+    .get(
+      input.lead.project_id,
+      input.lead.id,
+      input.lead.tmux_target,
+      input.lead.tmux_socket,
+      input.epoch.pane_pid,
+      input.epoch.session_id,
+      input.reason,
+      input.reason === "stop" ? "wind_down" : "pending",
+      input.reason,
+    ) as { id: number } | undefined;
+  if (inserted === undefined) {
+    const existing = db
+      .prepare(
+        `SELECT id FROM lead_handoffs WHERE project_id = ? AND lead_agent_id = ?
+           AND predecessor_pane_pid = ? AND predecessor_session_id = ?`,
+      )
+      .get(input.lead.project_id, input.lead.id, input.epoch.pane_pid, input.epoch.session_id) as { id: number } | undefined;
+    const active = existing ?? (readActiveHandoff(input.lead.id) as { id: number } | null) ?? undefined;
+    return { requestId: active?.id ?? 0, created: false };
+  }
+  const wake = db
+    .prepare(
+      `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+       SELECT ?, ?, ?, 'delay', actor_id, tmux_target, NULL FROM agents WHERE id = ?
+       RETURNING id`,
+    )
+    .get(input.lead.project_id, input.ownerActor, input.requestBody(inserted.id), input.lead.id) as { id: number };
+  db.prepare("UPDATE lead_handoffs SET request_wake_id = ? WHERE id = ?").run(wake.id, inserted.id);
+  return { requestId: inserted.id, created: true };
+});
+
+export function armHandoffRequest(input: ArmInput): { requestId: number; created: boolean } {
+  return armTransaction.immediate(input);
+}
+
+const manualArmTransaction = db.transaction((lead: LeadForHandoff, epoch: ArmInput["epoch"]): { requestId: number; created: boolean } => {
+  const current = db.prepare("SELECT * FROM agents WHERE id = ? AND kind = 'lead' AND status = 'running'").get(lead.id) as LeadForHandoff | undefined;
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  const harnessProblem = current === undefined ? null : handoffHarnessProblem(current);
+  if (harnessProblem !== null) throw new Error(`manual ${harnessProblem}`);
+  if (current === undefined || current.project_id !== lead.project_id || current.pane_pid !== epoch.pane_pid
+      || current.tmux_target !== lead.tmux_target || current.tmux_socket !== lead.tmux_socket
+      || epoch.session_id === "" || snapshot?.session_id !== epoch.session_id || snapshot.pane_pid !== epoch.pane_pid
+      || snapshot.snapshot_session_id !== epoch.session_id || snapshot.snapshot_pane_pid !== epoch.pane_pid) {
+    throw new Error("the lead's current epoch is unknown or changed; retry from its current session");
+  }
+  const active = readActiveHandoff(lead.id);
+  if (active !== null) return { requestId: active.id, created: false };
+  const inserted = db.prepare(
+    `INSERT INTO lead_handoffs (project_id, lead_agent_id, pane_target, tmux_socket, predecessor_pane_pid,
+       predecessor_session_id, reason, request_reason, state, pass, pass_started_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'manual', 'manual', 'requested', 1, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+     ON CONFLICT DO NOTHING RETURNING id`,
+  ).get(lead.project_id, lead.id, lead.tmux_target, lead.tmux_socket, epoch.pane_pid, epoch.session_id) as { id: number } | undefined;
+  if (inserted !== undefined) return { requestId: inserted.id, created: true };
+  const existing = db.prepare(
+    `SELECT id FROM lead_handoffs WHERE project_id = ? AND lead_agent_id = ? AND predecessor_pane_pid = ? AND predecessor_session_id = ?`,
+  ).get(lead.project_id, lead.id, epoch.pane_pid, epoch.session_id) as { id: number };
+  return { requestId: existing.id, created: false };
+});
+
+export function armManualHandoff(lead: LeadForHandoff, epoch: { pane_pid: string; session_id: string }): { requestId: number; created: boolean } {
+  return manualArmTransaction.immediate(lead, epoch);
+}
+
+// The command runs inside a turn, so its last Stop is information, not proof of current safety.
+export function manualHandoffWaitInfo(lead: LeadForHandoff): string | null {
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (snapshot === null || snapshot.session_id === "" || snapshot.snapshot_session_id !== snapshot.session_id
+      || snapshot.pane_pid !== lead.pane_pid || snapshot.snapshot_pane_pid !== lead.pane_pid
+      || snapshot.stop_prompt_seq === null || snapshot.stop_background === null) return null;
+  try {
+    const tasks = liveBackgroundTasks(JSON.parse(snapshot.stop_background)).filter((task) => artifactWatchUrl(task) === null);
+    if (tasks.length === 0) return null;
+    const types = [...new Set(tasks.map((task) => task.type || "unknown"))].sort().join(", ");
+    return `this handoff waits for: ${tasks.length} ${types}; stop them, or it postpones after 10 minutes`;
+  } catch {
+    return null;
+  }
+}
+
+// Definite failure before the destructive transition: record why, and the gate stops holding.
+// The epoch's unique key means the scheduler never re-requests it.
+type Binding = Partial<Record<keyof HandoffRow, string | number | null>>;
+
+const failTransaction = db.transaction((id: number, failure: string, from: readonly HandoffState[], where: Binding): boolean => {
+  if (!casHandoff(id, from, { state: "failed", failure, owner_token: null, owner_pid: null }, where)) return false;
+  db.prepare(
+    `UPDATE wakes SET cancelled_at = datetime('now'), held_reason = ?
+      WHERE id = (SELECT request_wake_id FROM lead_handoffs WHERE id = ?) AND ${pendingOneShotWhere()}`,
+  ).run(`lead handoff #${id} failed: ${failure}`, id);
+  return true;
+});
+
+export function failHandoff(
+  id: number,
+  failure: string,
+  from: readonly HandoffState[] = PRE_RESPAWN_STATES,
+  where: Binding = {},
+): boolean {
+  return failTransaction.immediate(id, failure, from, where);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+// The scheduler never replays a claimed respawn. It fails a moved successor and releases the
+// holds of a respawn that never settled after the cap.
+function settleAfterRespawn(row: HandoffRow, lead: { pane_pid: string }): void {
+  if (row.state === "started" && row.successor_pane_pid !== null && lead.pane_pid !== row.successor_pane_pid) {
+    casHandoff(row.id, ["started"], { state: "failed", failure: "the lead pane no longer runs the successor this handoff started" });
+    return;
+  }
+  if (row.state === "started" && row.blocked_reason !== SUCCESSOR_NOT_READY && olderThan(row.started_at, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(row.id, ["started"], { blocked_reason: SUCCESSOR_NOT_READY });
+    return;
+  }
+  if ((row.state === "respawning" || row.state === "ambiguous") && row.hold_released_at === null && olderThan(row.updated_at, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(row.id, [row.state], { hold_released_at: nowSql(), blocked_reason: row.failure ?? "the respawn never settled" });
+  }
+}
+
+export const REQUEST_BODY_PREFIX = "hive lead handoff request #";
+
+export const HANDOFF_HEADINGS = [
+  "IN FLIGHT",
+  "WAITING ON",
+  "QUEUED NEXT",
+  "OPEN QUESTIONS FOR THE HUMAN",
+  "HUMAN INSTRUCTIONS THIS SESSION",
+  "HUMAN'S LAST REQUEST",
+  "VERIFY ON ARRIVAL",
+  "DON'T REDO",
+  "SESSION WORK TO RESTORE",
+] as const;
+
+export function requestBody(row: Pick<HandoffRow, "id" | "pass" | "reason">, turns: number | null): string {
+  const policy = passPolicy(row.pass, row.reason);
+  return [
+    `${REQUEST_BODY_PREFIX}${row.id} (pass ${row.pass}, ${row.reason} budget` +
+      `${turns === null ? "" : `, ${turns} turns`}). hive will replace this session with a fresh one in the same pane.`,
+    "",
+    "1. Finish or park any write you have in progress, so the project's own records are current.",
+    `2. Write the pad "${HANDOFF_PAD_NAME}" with exactly these headings, in this order. "none" is a valid entry; ` +
+      "point into the store rather than copying it, and keep it under about 8,000 characters:",
+    ...HANDOFF_HEADINGS.map((h) => `   ${h}`),
+    "   Under SESSION WORK TO RESTORE list every /loop, cron, ScheduleWakeup, monitor or in-session task list " +
+      "and how to re-arm it; none of them survive the new session. Re-arm what you can as hive wakes now.",
+    "   List each watched artifact by its URL and tell the successor how to re-watch it.",
+    "3. Read the pad back and note its id and revision.",
+    `4. Tell the human in plain words: "I will hand off after ${policy.graceSeconds} quiet seconds. Human input postpones it."`,
+    `5. Run: hive lead-handoff --request ${row.id} --pad <pad id> --revision <revision>`,
+    "",
+    "If you cannot write the pad, say so and do not run the command; this session stays as it is.",
+  ].join("\n");
+}
+
+// Automated deliveries to the lead other than the handoff's own request wakes.
+export function automationBlocker(lead: { id: number; actor_id: string }, seconds: number | null): string | null {
+  const inFlight = db
+    .prepare(
+      `SELECT 1 AS hit FROM agent_messages WHERE to_agent_id = ? AND delivery_status IN (?, ?)
+        AND created_at >= datetime('now', ?)
+       UNION ALL
+       SELECT 1 FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ? AND ${handoffSocketInFlightWhere()}
+       LIMIT 1`,
+    )
+    .get(lead.id, MESSAGE_STATUS.socketPending, MESSAGE_STATUS.fallbackClaimed, MESSAGE_RETENTION,
+      lead.actor_id, `${REQUEST_BODY_PREFIX}%`, LOG_RETENTION);
+  if (inFlight !== undefined) return "a delivery to the lead is still in flight";
+  if (seconds === null) return null;
+  const window = `-${seconds} seconds`;
+  const recent = db
+    .prepare(
+      `SELECT 1 AS hit FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ?
+         AND (fired_at >= datetime('now', ?) OR typed_at >= datetime('now', ?) OR socket_attempt_at >= datetime('now', ?))
+         AND NOT (kind IN ('idle_any', 'idle_all') AND watch_scope IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM wake_idle_notices n JOIN wakes p ON p.id = wakes.parent_wake_id
+                          WHERE n.notice_wake_id = wakes.id AND p.watch_scope IS NOT NULL)
+       UNION ALL
+       SELECT 1 FROM agent_messages WHERE to_agent_id = ? AND created_at >= datetime('now', ?)
+       LIMIT 1`,
+    )
+    .get(lead.actor_id, `${REQUEST_BODY_PREFIX}%`, window, window, window, lead.id, window);
+  return recent === undefined ? null : `an automated delivery reached the lead in the last ${seconds} s`;
+}
+
+interface Blocker {
+  reason: string;
+  background: boolean;
+}
+
+interface HandoffWait {
+  held_since: string;
+  blocker_key?: string;
+  last_key: string | null;
+  notice_id: number | null;
+}
+
+const handoffWaitKey = (id: number): string => `handoff-wait:${id}`;
+
+function readHandoffWait(row: HandoffRow): HandoffWait | null {
+  const saved = db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(row.project_id, handoffWaitKey(row.id)) as { value: string } | undefined;
+  return saved === undefined ? null : JSON.parse(saved.value) as HandoffWait;
+}
+
+function clearFinishedHandoffWaits(leadId: number): void {
+  const rows = db.prepare(
+    `SELECT h.* FROM lead_handoffs h JOIN kv k ON k.project_id = h.project_id AND k.key = 'handoff-wait:' || h.id
+      WHERE h.lead_agent_id = ? AND (h.state NOT IN ('pending', 'wind_down', 'postponed')
+        OR NOT EXISTS (SELECT 1 FROM wakes w WHERE w.id = h.request_wake_id AND w.due_at IS NULL AND ${pendingOneShotWhere("w.")}))`,
+  ).all(leadId) as HandoffRow[];
+  for (const row of rows) clearHandoffWait(row);
+}
+
+const recordHandoffWait = db.transaction((row: HandoffRow, lead: LeadForHandoff & { actor_id: string }, canNotify: boolean): void => {
+  const current = readHandoff(row.id);
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (current === null || !["pending", "wind_down", "postponed"].includes(current.state)) return;
+  const waiting = db.prepare(`SELECT 1 FROM wakes WHERE id = ? AND due_at IS NULL AND ${pendingOneShotWhere()}`).get(current.request_wake_id);
+  if (waiting === undefined) {
+    clearHandoffWait(current);
+    return;
+  }
+  if (snapshot?.session_id !== current.predecessor_session_id || snapshot.snapshot_session_id !== snapshot.session_id
+      || snapshot.pane_pid !== current.predecessor_pane_pid || snapshot.stop_prompt_seq !== snapshot.prompt_seq || snapshot.stop_background === null) return;
+  let tasks: ReturnType<typeof liveBackgroundTasks>;
+  try {
+    const evidence = JSON.parse(snapshot.stop_background);
+    if (!Array.isArray(evidence)) return;
+    tasks = liveBackgroundTasks(evidence).filter((task) => task.type !== "monitor");
+  } catch {
+    return;
+  }
+  if (tasks.length === 0) {
+    clearHandoffWait(current);
+    return;
+  }
+  const key = JSON.stringify(tasks.map((task) => [task.type, task.status, task.description]).sort());
+  let saved = readHandoffWait(current);
+  if (saved === null || (saved.blocker_key ?? saved.last_key) !== key) {
+    clearHandoffWait(current);
+    saved = { held_since: nowSql(), blocker_key: key, last_key: null, notice_id: null };
+  }
+  if (canNotify && olderThan(saved.held_since, 5 * 60) && saved.last_key !== key) {
+    clearHandoffWait(current);
+    const types = [...new Set(tasks.map((task) => task.type || "unknown"))].sort().join(", ");
+    const body = `hive: handoff #${current.id} is waiting on ${tasks.length} live background task${tasks.length === 1 ? "" : "s"} (${types}). ` +
+      "Either stop them, noting in your handoff pad anything the next session should restart, and the handoff proceeds; " +
+      "or keep them running and the handoff waits until they end.\n" +
+      tasks.map(describeOneTask).sort().join("\n");
+    const notice = db.prepare(
+      `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+       SELECT ?, ?, ?, 'delay', actor_id, tmux_target, datetime('now') FROM agents
+        WHERE id = ? AND status = 'running' AND pane_pid = ? AND tmux_target = ? RETURNING id`,
+    ).get(current.project_id, lead.actor_id, body, lead.id, current.predecessor_pane_pid, current.pane_target) as { id: number } | undefined;
+    if (notice !== undefined) {
+      saved.last_key = key;
+      saved.notice_id = notice.id;
+    }
+  }
+  db.prepare(
+    `INSERT INTO kv (project_id, key, value, updated_by) VALUES (?, ?, ?, ?)
+     ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')`,
+  ).run(current.project_id, handoffWaitKey(current.id), JSON.stringify(saved), lead.actor_id);
+});
+
+function requestBlocker(
+  lead: { id: number; actor_id: string },
+  row: HandoffRow,
+  snapshot: (LeadTurnState & LeadSafetySnapshot) | null,
+): Blocker | null {
+  if (snapshot === null || snapshot.state !== "idle") return { reason: "the lead's turn has not ended", background: false };
+  const background = requestBackgroundVeto(snapshot);
+  if (background !== null) return { reason: background, background: true };
+  const policy = passPolicy(row.pass, row.reason);
+  if (!policy.requestNeedsQuiet) return null;
+  if (!olderThan(snapshot.human_prompt_at, policy.humanQuietSeconds)) {
+    return { reason: `a human prompt arrived in the last ${policy.humanQuietSeconds} s`, background: false };
+  }
+  const automation = automationBlocker(lead, policy.automationQuietSeconds);
+  return automation === null ? null : { reason: automation, background: false };
+}
+
+const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; actor_id: string; tmux_target: string }, turns: number | null): boolean => {
+  const current = readHandoff(row.id);
+  if (current === null || current.state !== row.state || current.pass !== row.pass) return false;
+  clearHandoffWait(current);
+  const waiting = current.request_wake_id === null
+    ? undefined
+    : (db
+        .prepare(`SELECT id FROM wakes WHERE id = ? AND due_at IS NULL AND ${pendingOneShotWhere()}`)
+        .get(current.request_wake_id) as { id: number } | undefined);
+  let wakeId: number;
+  if (waiting !== undefined) {
+    db.prepare("UPDATE wakes SET due_at = datetime('now'), body = ? WHERE id = ?").run(requestBody(current, turns), waiting.id);
+    wakeId = waiting.id;
+  } else {
+    wakeId = (
+      db
+        .prepare(
+          `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+           VALUES (?, ?, ?, 'delay', ?, ?, datetime('now')) RETURNING id`,
+        )
+        .get(current.project_id, lead.actor_id, requestBody(current, turns), lead.actor_id, lead.tmux_target) as { id: number }
+    ).id;
+  }
+  const holds = passPolicy(current.pass, current.reason).holdsFromRequest;
+  return casHandoff(
+    current.id,
+    [current.state],
+    {
+      state: "requested",
+      request_reason: current.reason,
+      request_wake_id: wakeId,
+      hold_released_at: null,
+      // The stop-hold clock runs across passes; only re-arming a released hold restarts it.
+      hold_since: !holds ? null : current.hold_released_at !== null || current.hold_since === null ? nowSql() : current.hold_since,
+      blocked_reason: null,
+    },
+    { pass: current.pass },
+  );
+});
+
+function maintainHold(row: HandoffRow, reason: string | null): void {
+  const holds = handoffHoldsAutomation(row);
+  if (holds && row.hold_since === null) {
+    casHandoff(row.id, [row.state], { hold_since: nowSql() }, { hold_since: null });
+    return;
+  }
+  if (holds && row.state !== "grace" && olderThan(row.hold_since, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(
+      row.id,
+      [row.state],
+      { hold_released_at: nowSql(), blocked_reason: reason ?? "no quiet moment" },
+      { hold_released_at: null },
+    );
+    return;
+  }
+  if (reason !== row.blocked_reason && reason !== null) casHandoff(row.id, [row.state], { blocked_reason: reason });
+}
+
+// The scheduler's WHEN: arm at warn, wind down at stop, request at the pass's quiet moment, escalate
+// a pass that found none in 10 minutes, and release a hold that has lasted 15. Never touches a pane.
+export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: string) => LeadTurnBudget | null): void {
+  const lead = db
+    .prepare(
+      `SELECT a.id, a.project_id, a.actor_id, a.command, a.pane_pid, a.tmux_target, a.tmux_socket, p.path
+         FROM agents a JOIN projects p ON p.id = a.project_id
+        WHERE a.actor_id = ? AND a.kind = 'lead' AND a.status = 'running'`,
+    )
+    .get(actorId) as (LeadForHandoff & { actor_id: string; path: string }) | undefined;
+  if (lead === undefined) return;
+  clearFinishedHandoffWaits(lead.id);
+  const budget = budgetFor(lead.path);
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  let row = readActiveHandoff(lead.id);
+  if (row === null) {
+    const eligibility = handoffEligibility(lead, budget, snapshot);
+    if (!eligibility.eligible) return;
+    armHandoffRequest({
+      lead,
+      ownerActor: lead.actor_id,
+      reason: eligibility.reason,
+      epoch: eligibility.epoch,
+      requestBody: (id) => requestBody({ id, pass: 1, reason: eligibility.reason }, eligibility.turns),
+    });
+    row = readActiveHandoff(lead.id);
+    if (row === null) return;
+  }
+  if (!PRE_RESPAWN_STATES.includes(row.state)) {
+    settleAfterRespawn(row, lead);
+    return;
+  }
+  if (row.reason !== "manual" && !autoHandoffEnabled(budget)) {
+    failHandoff(row.id, "lead_turn_budget.auto_handoff is no longer on");
+    return;
+  }
+  if (lead.pane_pid !== row.predecessor_pane_pid || snapshot?.session_id !== row.predecessor_session_id) {
+    failHandoff(row.id, "the lead's pane or session changed before the handoff (a restart, /clear or /resume)");
+    return;
+  }
+  if (row.state === "grace") {
+    const deadline = (row.grace_seconds ?? 120) + RESPAWN_WAIT_LIMIT_SECONDS + 120;
+    const dead = row.owner_pid !== null && !processAlive(row.owner_pid);
+    if (dead || olderThan(row.grace_started_at, deadline)) {
+      failHandoff(row.id, dead ? "the grace owner process died" : "the grace ran far past its deadline", ["grace"], {
+        attempt: row.attempt,
+        owner_token: row.owner_token,
+      });
+    }
+    return;
+  }
+  const eligibility = handoffEligibility(lead, budget, snapshot);
+  if (eligibility.eligible && eligibility.reason === "stop" && row.reason === "warn") {
+    casHandoff(row.id, [row.state], { reason: "stop", ...(row.state === "pending" ? { state: "wind_down" } : {}) }, { reason: "warn" });
+    row = readHandoff(row.id)!;
+  }
+  const blocker = requestBlocker(lead, row, snapshot);
+  if (row.state !== "requested") {
+    const saved = readHandoffWait(row);
+    const canNotify = saved !== null && olderThan(saved.held_since, 5 * 60)
+      && paneClassifierFor(lead.command) !== null && rowOwnership(lead) === "live";
+    recordHandoffWait.immediate(row, lead, canNotify);
+  }
+  if (row.state === "requested") {
+    maintainHold(row, blocker?.reason ?? null);
+    return;
+  }
+  if (blocker === null) {
+    requestTransaction.immediate(row, lead, eligibility.eligible ? eligibility.turns : null);
+    return;
+  }
+  if (!blocker.background && olderThan(row.pass_started_at, PASS_TIMEOUT_SECONDS)) {
+    casHandoff(
+      row.id,
+      [row.state],
+      {
+        pass: row.pass + 1,
+        pass_started_at: nowSql(),
+        blocked_reason: blocker.reason,
+      },
+      { pass: row.pass },
+    );
+    return;
+  }
+  maintainHold(row, blocker.reason);
+}
+
+export const RESPAWN_WAIT_LIMIT_SECONDS = 10 * 60;
+
+export function missingHeadings(content: string): string[] {
+  const lines = content.split("\n").map((l) => l.replace(/^[#\s*_]+|[\s*_:]+$/g, "").toUpperCase());
+  const missing: string[] = [];
+  let from = 0;
+  for (const heading of HANDOFF_HEADINGS) {
+    const at = lines.indexOf(heading, from);
+    if (at === -1) missing.push(heading);
+    else from = at + 1;
+  }
+  return missing;
+}
+
+export function successorPrompt(row: Pick<HandoffRow, "id" | "lead_agent_id" | "predecessor_session_id" | "predecessor_turns" | "reason" | "pass">): string {
+  const snapshot = readLeadSafetySnapshot(row.lead_agent_id);
+  let artifacts: string[] = [];
+  if (snapshot?.snapshot_session_id === row.predecessor_session_id && snapshot.session_id === row.predecessor_session_id) {
+    try {
+      artifacts = [...new Set((JSON.parse(snapshot.stop_background ?? "[]") as Parameters<typeof artifactWatchUrl>[0][]).flatMap((task) => {
+        const url = artifactWatchUrl(task);
+        return url === null ? [] : [url];
+      }))];
+    } catch {
+      artifacts = [];
+    }
+  }
+  return [
+    `You are taking over as this project's lead from session ${row.predecessor_session_id} (hive handoff #${row.id}).`,
+    `Read the "${HANDOFF_PAD_NAME}" handoff hive injected at session start (if none arrived, pad_read it by name), ` +
+      "then the project's durable state.",
+    "Open your first reply with exactly one line:",
+    `"Took over from session ${row.predecessor_session_id} at turn ${row.predecessor_turns ?? "?"} (${row.reason}, pass ${row.pass}). ` +
+      'Carried over: <a> in flight, <b> queued, <c> questions for you."',
+    "counting the IN FLIGHT, QUEUED NEXT and OPEN QUESTIONS FOR THE HUMAN entries, then quote OPEN QUESTIONS FOR THE HUMAN verbatim.",
+    "Re-arm everything under SESSION WORK TO RESTORE, check VERIFY ON ARRIVAL, then continue with QUEUED NEXT.",
+    ...(artifacts.length === 0 ? [] : ["Re-watch each artifact whose live-update monitor the predecessor left running:", ...artifacts.map((url) => `- ${url}`)]),
+  ].join("\n");
+}
+
+export interface RunningLead extends LeadForHandoff {
+  actor_id: string;
+  path: string;
+  name: string;
+}
+
+export function runningLeadByActor(actorId: string): RunningLead | undefined {
+  return db
+    .prepare(
+      `SELECT a.id, a.project_id, a.actor_id, a.command, a.pane_pid, a.tmux_target, a.tmux_socket, p.path, p.name
+         FROM agents a JOIN projects p ON p.id = a.project_id
+        WHERE a.actor_id = ? AND a.kind = 'lead' AND a.status = 'running'`,
+    )
+    .get(actorId) as RunningLead | undefined;
+}
+
+export interface PadRow {
+  id: number;
+  project_id: number;
+  name: string;
+  archived: number;
+  revision: number;
+  content: string;
+}
+
+export const readPad = (id: number): PadRow | undefined =>
+  db.prepare("SELECT id, project_id, name, archived, revision, content FROM pads WHERE id = ?").get(id) as PadRow | undefined;
+
+export function padProblem(pad: PadRow | undefined, projectId: number, revision: number): string | null {
+  if (pad === undefined || pad.project_id !== projectId) return "that pad does not exist in this project";
+  if (pad.name !== HANDOFF_PAD_NAME || pad.archived !== 0) return `that pad is not the active "${HANDOFF_PAD_NAME}" pad`;
+  if (pad.revision !== revision) return `that pad is at revision ${pad.revision}, not ${revision}; read it back and pass its current revision`;
+  if (pad.content.trim() === "") return "the pad is empty";
+  return null;
+}
+
+// `hive lead-handoff`: the lead's own confirmation that its handoff is persisted. It validates the
+// caller, epoch and exact pad revision, claims one attempt, and hands the grace to one detached owner.
+export type Verdict = { go: true } | { wait: string } | { postpone: string; escalate: boolean } | { fail: string };
+
+// The final quiet check. A screen or probe that cannot be read waits; it never establishes quiet.
+export async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, budget: LeadTurnBudget | null): Promise<Verdict> {
+  if (row.reason !== "manual" && !autoHandoffEnabled(budget)) return { fail: "lead_turn_budget.auto_handoff is no longer on" };
+  if (lead === undefined || lead.pane_pid !== row.predecessor_pane_pid || lead.tmux_target !== row.pane_target) {
+    return { fail: "the lead row no longer names the pane this handoff was requested for" };
+  }
+  if (tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR) !== row.tmux_socket) {
+    return { fail: "the grace owner is not talking to the lead's tmux server" };
+  }
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (snapshot?.session_id !== row.predecessor_session_id) return { fail: "the lead's session changed" };
+  if (snapshot.human_prompt_seq !== row.human_prompt_baseline) return { postpone: "a human prompt arrived during grace", escalate: true };
+  const ownership = rowOwnership(lead);
+  if (ownership === "unknown") return { wait: "the lead's pane ownership reads unknown" };
+  if (ownership !== "live") return { fail: `the lead's pane is ${ownership}` };
+  if (snapshot.state !== "idle") return { wait: "the lead's turn has not ended" };
+  const background = backgroundVeto(snapshot);
+  if (background !== null) return { wait: background };
+  const pad = row.pad_id === null ? undefined : readPad(row.pad_id);
+  if (padProblem(pad, lead.project_id, row.pad_revision ?? -1) !== null) {
+    return { postpone: "the handoff pad changed after the command", escalate: false };
+  }
+  const policy = quotedPolicy(row);
+  if (!olderThan(snapshot.human_prompt_at, policy.humanQuietSeconds)) {
+    return { wait: `a human prompt arrived in the last ${policy.humanQuietSeconds} s` };
+  }
+  const automation = automationBlocker(lead, policy.automationQuietSeconds);
+  if (automation !== null) return { wait: automation };
+  if (paneInCopyMode(lead.tmux_target) !== false) return { wait: "the lead's pane is in copy mode or unreadable" };
+  const classifier = paneClassifierFor(lead.command);
+  if (!classifier) return { fail: "hive cannot classify the lead's screen" };
+  const choice = classifier.choiceCheck(lead.tmux_target).awaitingChoice;
+  if (choice !== false) return { wait: choice ? "the lead's pane is waiting on a choice" : "the lead's pane could not be read" };
+  const box = classifier.inputBoxState(lead.tmux_target);
+  if (holdsHumanInput(box)) return { postpone: "unsubmitted text is in the lead's input box", escalate: true };
+  if (box === null || (box.state !== "empty" && box.state !== "ghost")) return { wait: "the lead's input box could not be read" };
+  return { go: true };
+}
+
+const MARKER_SECONDS = 30 * 60;
+
+// The SessionStart payload for a starting lead whose project holds an active handoff pad: the pad in
+// full, plus what hive itself knows. Never truncated; never shown to a worker.
+export function handoffInjection(leadActor: string): string | null {
+  const lead = runningLeadByActor(leadActor);
+  if (lead === undefined) return null;
+  const pad = db
+    .prepare("SELECT id, revision, content, updated_at FROM pads WHERE project_id = ? AND name = ? AND archived = 0")
+    .get(lead.project_id, HANDOFF_PAD_NAME) as { id: number; revision: number; content: string; updated_at: string } | undefined;
+  if (pad === undefined) return null;
+  const row = db
+    .prepare(
+      `SELECT * FROM lead_handoffs WHERE lead_agent_id = ? AND pad_id = ?
+         AND (state IN ('started', 'ambiguous') OR (state = 'failed' AND respawn_claimed_at IS NOT NULL))
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(lead.id, pad.id) as HandoffRow | undefined;
+  if (row === undefined) return null;
+  const workers = db
+    .prepare("SELECT name, agent_state FROM agents WHERE project_id = ? AND kind = 'agent' AND status = 'running' ORDER BY id")
+    .all(lead.project_id) as { name: string; agent_state: string }[];
+  const pending = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM wakes WHERE deliver_actor = ? AND ${pendingOneShotWhere()}`)
+      .get(lead.actor_id) as { n: number }
+  ).n;
+  const heldWakes = (
+    db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE deliver_actor = ? AND held_reason = ? AND cancelled_at IS NULL").get(lead.actor_id, HELD_REASON_HANDOFF) as {
+      n: number;
+    }
+  ).n;
+  const heldMessages = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE to_agent_id = ? AND delivery_status = ? AND created_at >= datetime('now', ?)")
+      .get(lead.id, MESSAGE_STATUS.fallbackPending, MESSAGE_RETENTION) as { n: number }
+  ).n;
+  const lines = [`[hive] LEAD HANDOFF: pad "${HANDOFF_PAD_NAME}" #${pad.id} revision ${pad.revision}, written ${pad.updated_at} UTC.`];
+  {
+    lines.push(
+      `Handed off by session ${row.predecessor_session_id} at turn ${row.predecessor_turns ?? "?"} (${row.reason}, pass ${row.pass})` +
+        `${row.started_at ? ` at ${row.started_at} UTC` : ""}; handoff #${row.id} is ${row.state}.`,
+    );
+  }
+  lines.push(
+    workers.length === 0 ? "Workers: none running." : `Workers: ${workers.map((w) => `${w.name} [${w.agent_state}]`).join(", ")}.`,
+    `Wakes pending for this lead: ${pending}. Held for the handoff and ${row.state === "started" ? "delivered to you once your first turn ends" : "released to you now"}: ` +
+      `${heldWakes} wake(s), ${heldMessages} message(s).`,
+    row.state === "started" && row.successor_pane_pid === lead.pane_pid
+      ? `hive archives this pad after your first completed turn. Then append one line to it with ` +
+        `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`
+      : `This handoff did not complete (${row.state === "started" ? "its successor is gone" : row.state}${row.failure ? `: ${row.failure}` : ""}), so hive will not archive the pad; ` +
+        `archive it with pad_archive(pad_id: ${pad.id}) once you have taken it over.`,
+    "",
+    pad.content,
+  );
+  return lines.join("\n");
+}
+
+// An appended line (the successor's gaps note) keeps the delivered text as a prefix and still archives.
+function stillDelivered(row: HandoffRow): { revision: number } | null {
+  if (row.pad_id === null || row.pad_revision === null || row.pad_length === null || row.pad_sha256 === null) return null;
+  const pad = readPad(row.pad_id);
+  if (pad === undefined || pad.archived !== 0 || pad.name !== HANDOFF_PAD_NAME || pad.revision < row.pad_revision) return null;
+  return sha256(pad.content.slice(0, row.pad_length)) === row.pad_sha256 ? { revision: pad.revision } : null;
+}
+
+const completeTransaction = db.transaction((row: HandoffRow, sessionId: string): void => {
+  const current = stillDelivered(row);
+  const archived =
+    current !== null &&
+    db
+      .prepare(
+        `UPDATE pads SET archived = 1, revision = revision + 1, updated_by = 'hive', updated_at = datetime('now')
+          WHERE id = ? AND revision = ? AND archived = 0 AND name = ?`,
+      )
+      .run(row.pad_id, current.revision, HANDOFF_PAD_NAME).changes === 1;
+  const completedAt = nowSql();
+  casHandoff(row.id, ["started"], {
+    state: "completed",
+    successor_session_id: sessionId,
+    completed_at: completedAt,
+    hold_released_at: completedAt,
+    blocked_reason: null,
+    delivered_pad_id: archived ? row.pad_id : null,
+    delivered_pad_revision: archived ? row.pad_revision : null,
+    failure: archived ? null : "the delivered handoff text was edited after the command, so the pad was left active",
+  });
+});
+
+// The successor's first completed turn: a Stop in a new session on the successor's pane, after at
+// least one prompt there, with no background work. Anything else leaves the pad active.
+export function completeHandoffOnStop(actorId: string): boolean {
+  const lead = runningLeadByActor(actorId);
+  if (lead === undefined) return false;
+  const row = db.prepare("SELECT * FROM lead_handoffs WHERE lead_agent_id = ? AND state = 'started'").get(lead.id) as HandoffRow | undefined;
+  if (row === undefined || lead.pane_pid !== row.successor_pane_pid) return false;
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (
+    snapshot === null ||
+    snapshot.pane_pid !== lead.pane_pid ||
+    snapshot.snapshot_session_id !== snapshot.session_id ||
+    snapshot.session_id === row.predecessor_session_id ||
+    snapshot.stop_prompt_seq === null ||
+    snapshot.stop_prompt_seq < 1 ||
+    snapshot.stop_prompt_seq !== snapshot.prompt_seq
+  ) {
+    return false;
+  }
+  completeTransaction.immediate(row, snapshot.session_id);
+  return readHandoff(row.id)?.state === "completed";
+}
+
+export function handoffStatusSegment(leadAgentId: number): string | null {
+  const row = readActiveHandoff(leadAgentId);
+  if (row !== null) {
+    if (row.state === "started") return row.blocked_reason === SUCCESSOR_NOT_READY ? `handoff started: ${SUCCESSOR_NOT_READY}` : "handoff started";
+    if (row.hold_released_at !== null || (row.state === "pending" && row.blocked_reason !== null)) {
+      return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
+    }
+    if (row.state === "grace") return "handoff in grace";
+    return `handoff ${row.state.replace("_", " ")}`;
+  }
+  const done = db
+    .prepare(
+      `SELECT CAST((julianday('now') - julianday(completed_at)) * 86400 AS INTEGER) AS age FROM lead_handoffs
+        WHERE lead_agent_id = ? AND state = 'completed' ORDER BY id DESC LIMIT 1`,
+    )
+    .get(leadAgentId) as { age: number } | undefined;
+  if (done === undefined || done.age > MARKER_SECONDS) return null;
+  return `handed off ${done.age < 60 ? `${done.age}s` : `${Math.floor(done.age / 60)}m`} ago`;
+}

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { cliPath, dispatcherPath, readDispatcher } from "./dispatcher.js";
+import { cliPath, dispatcherPath, readDispatcher, repinCommand } from "./dispatcher.js";
 
 const requireFromHere = createRequire(import.meta.url);
 
@@ -159,7 +159,7 @@ export function abiFixLines(status: AbiStatus, pinned?: string | null): string[]
     const need = status.nodeApiRequired;
 
     const range = need === null ? null : nodeRangeForNodeApi(need);
-    const good = pinned ? `"${pinned}"` : `<a Node matching ${range ?? "that Node-API level"}>`;
+    const good = pinned ?? `<a Node matching ${range ?? "that Node-API level"}>`;
     return [
       `better-sqlite3's addon is built against Node-API ${need}${range ? `, which only Node ${range} provides` : ""}.`,
       `This interpreter provides Node-API ${describeNodeApi(status.nodeApi)}, so the addon cannot load here.`,
@@ -171,7 +171,7 @@ export function abiFixLines(status: AbiStatus, pinned?: string | null): string[]
       "",
       `Run hive under a Node matching ${range ?? "that Node-API level"}, and re-pin the \`hive\` command`,
       "to it (setup pins whatever Node runs it, so it has to be that one):",
-      `  ${good} "${cliPath()}" setup`,
+      `  ${repinCommand(good, cliPath())}`,
     ];
   }
 
@@ -195,7 +195,7 @@ export function abiFixLines(status: AbiStatus, pinned?: string | null): string[]
   if (status.failure !== "mismatch") {
     return ["Build it:  npm install && npm run build"];
   }
-  const good = pinned ? `"${pinned}"` : "<the Node that built it>";
+  const good = pinned ?? "<the Node that built it>";
   return [
     "better-sqlite3's addon is ABI-locked to the Node that compiled it, and a Node",
     "version manager resolves `node` from the working directory, so a `cd` is enough",
@@ -203,10 +203,12 @@ export function abiFixLines(status: AbiStatus, pinned?: string | null): string[]
     "",
     "Run hive under the Node it was built for, and re-pin the `hive` command to it",
     "(setup pins whatever Node runs it, so it has to be that one):",
-    `  ${good} "${cliPath()}" setup`,
+    `  ${repinCommand(good, cliPath())}`,
     "",
-    "Or rebuild the addon for the Node you are on, and re-pin to that:",
-    "  npm install && npm run build && hive setup",
+    "Rebuilding is not the fix for the supported addon. Update hive, then re-pin this CLI:",
+    "  Global install: npm install -g @cmgmyr/hive",
+    "  Checkout: npm install && npm run build",
+    `  ${repinCommand(good, cliPath())}`,
   ];
 }
 

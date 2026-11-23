@@ -2,14 +2,19 @@ import { db } from "./db.js";
 import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
-import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
-import { readLeadTurnState } from "./leadState.js";
+import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
+import { pendingQuestionCount } from "./questions.js";
+import { ACTIVE_TIMER_WHERE as ACTIVE_WAKE_WHERE } from "./wakeSql.js";
+export { ACTIVE_WAKE_WHERE };
+import { leadSessionEnded, readLeadTurnState } from "./leadState.js";
+import { finishedIdle } from "./firstPrompt.js";
 import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
 
 export const PORTFOLIO_REASONS = [
   "needs_human",
+  "questions_pending",
   "dead_lead_pane",
   "missing_root_with_work",
   "worker_needs_input",
@@ -30,7 +35,6 @@ const WAKE_OVERDUE_GRACE = "-5 minutes";
 const STALE_IN_PROGRESS = "-48 hours";
 const WAKE_UPCOMING = "+24 hours";
 
-export const ACTIVE_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 export type PortfolioLeadTurn = "working" | "turn_ended" | "unknown";
 
@@ -53,7 +57,7 @@ export interface PortfolioProject {
   root_exists: boolean;
   lane: PortfolioLane;
   reasons: PortfolioReason[];
-  lead: { state: "alive" | "dead_pane" | "none" | "unknown"; agent_id: number | null; turn: PortfolioLeadTurn };
+  lead: { state: "alive" | "dead_pane" | "dormant" | "none" | "unknown"; agent_id: number | null; turn: PortfolioLeadTurn; ended_at: string | null };
   workers: {
     working: number;
     idle: number;
@@ -64,6 +68,7 @@ export interface PortfolioProject {
   };
   todos: { open: number; in_progress: number; blocked: number; blocked_in_progress: number; high: number };
   needs_human: number;
+  questions_pending: number;
   needs_human_items: { todo_id: number; title: string; slug: string | null; updated_at: string }[];
   last_activity_at: string;
   wakes: { pending: number; overdue: number };
@@ -91,6 +96,7 @@ interface AgentRow {
   id: number;
   kind: string;
   agent_state: string;
+  resumed_at: string;
   tmux_target: string;
   tmux_socket: string;
   pane_pid: string;
@@ -133,7 +139,7 @@ function projectRow(
       `SELECT t.id, t.title, t.slug, t.priority, t.status, t.tags, t.updated_at,
               EXISTS (${OPEN_BLOCKERS_SQL}) AS blocked
          FROM todos t
-        WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL`,
+        WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}`,
     )
     .all(project.id) as TodoRow[];
 
@@ -153,7 +159,7 @@ function projectRow(
 
   const agents = db
     .prepare(
-      "SELECT id, kind, agent_state, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
+      "SELECT id, kind, agent_state, resumed_at, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
     )
     .all(project.id) as AgentRow[];
 
@@ -162,14 +168,17 @@ function projectRow(
   const workers = { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 };
   let liveWorking = 0;
   let liveWaiting = 0;
-  let lead: PortfolioProject["lead"] = { state: "none", agent_id: null, turn: "unknown" };
+  let lead: PortfolioProject["lead"] = { state: "none", agent_id: null, turn: "unknown", ended_at: null };
   for (const a of agents) {
     if (a.kind === "lead") {
-      const live = liveness(a);
+      const ownership = rowOwnership(a, snapshot);
+      const live = ownershipLiveness(ownership);
+      const ended = leadSessionEnded(a, ownership);
       lead = {
-        state: live === true ? "alive" : live === false ? "dead_pane" : "unknown",
+        state: live === true ? "alive" : live === false ? (ended ? "dormant" : "dead_pane") : "unknown",
         agent_id: a.id,
         turn: live === true ? leadTurnFor(a.id, a.pane_pid) : "unknown",
+        ended_at: ended?.ended_at ?? null,
       };
       continue;
     }
@@ -180,7 +189,8 @@ function projectRow(
     else if (a.agent_state === "working") {
       workers.working++;
       liveWorking++;
-    } else if (a.agent_state === "idle") workers.idle++;
+    } else if (finishedIdle(a)) workers.idle++;
+    else if (a.agent_state === "idle") workers.other++;
     else if (a.agent_state === "waiting") {
       workers.needs_input++;
       liveWaiting++;
@@ -208,10 +218,12 @@ function projectRow(
   const staleClock = lastActivity(project.id, false);
   const staleBefore = shiftedClock(now, STALE_IN_PROGRESS);
   const activeTodos = todos.open + todos.in_progress;
+  const questionsPending = pendingQuestionCount(project.id);
 
   const found = new Set<PortfolioReason>();
   if (tagged.length > 0) found.add("needs_human");
-  if (lead.state === "dead_pane" && (todos.in_progress > 0 || wakeCounts.pending > 0)) found.add("dead_lead_pane");
+  if (questionsPending > 0) found.add("questions_pending");
+  if ((lead.state === "dead_pane" || lead.state === "dormant") && (todos.in_progress > 0 || wakeCounts.pending > 0)) found.add("dead_lead_pane");
   if (!rootExists && (activeTodos > 0 || wakeCounts.pending > 0)) found.add("missing_root_with_work");
   if (liveWaiting > 0) found.add("worker_needs_input");
   if (wakeCounts.overdue_grace > 0) found.add("wake_overdue_5m");
@@ -234,7 +246,7 @@ function projectRow(
   let lane: PortfolioLane;
   if (HARD_STALL.some((r) => found.has(r))) lane = "stuck";
   else if (movingSignal) lane = "moving";
-  else if (found.has("needs_human")) lane = "waiting_on_you";
+  else if (found.has("needs_human") || found.has("questions_pending")) lane = "waiting_on_you";
   else if (TODO_GRAPH.some((r) => found.has(r))) lane = "stuck";
   else {
     lane = "quiet";
@@ -252,6 +264,7 @@ function projectRow(
     workers,
     todos,
     needs_human: tagged.length,
+    questions_pending: questionsPending,
     needs_human_items: tagged.slice(0, NEEDS_HUMAN_ITEM_CAP).map((t) => ({
       todo_id: t.id,
       title: t.title,

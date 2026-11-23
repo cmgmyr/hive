@@ -49,7 +49,7 @@ describe("hive CLI shared flag parser", () => {
 
     const { code, stdout, stderr } = await runCli(["pad", "runbook", "--edti"], cliOpts);
     assert.equal(code, 1);
-    assert.match(stderr, /unknown argument "--edti"\. Flags are --edit and --save\./);
+    assert.match(stderr, /unknown argument "--edti"\. Flags are --edit, --export, --save and --revision <n>\./);
     assert.equal(stdout, "", "a refused run must not fall through to printing the pad's content");
   });
 

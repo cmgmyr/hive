@@ -1,12 +1,80 @@
 import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS, recentQueenAudit } from "./queenAudit.js";
-import { runningBuildChange, runningBuildNotice } from "./version.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  DELIVERY_METHOD,
+  FIRING_DROPPED_NOTE,
+  HELD_REASON_ACTOR_CLOSED,
+  HELD_REASON_CONVERSATION,
+  HELD_REASON_COPY_MODE,
+  HELD_REASON_HANDOFF,
+  HELD_REASON_INVALID_CLOCK,
+  HELD_REASON_LEAD_BOOT_INPUT_BOX,
+  HELD_REASON_LEAD_PANE_DEAD,
+  HELD_REASON_LEAD_ROW_CLOSED,
+  HELD_REASON_MODAL_CHOICE,
+  HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM,
+  HELD_REASON_PANE_CAPTURE_UNKNOWN,
+  HELD_REASON_PANE_REISSUED_LEAD,
+  HELD_REASON_PANE_REISSUED_WORKER,
+  HELD_REASON_PANE_UNKNOWN_LEAD,
+  HELD_REASON_PANE_UNKNOWN_WORKER,
+  HELD_REASON_UNCLASSIFIABLE_PANE,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  HELD_REASON_UNSUBMITTED_INPUT,
+  HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  HELD_REASON_USAGE_LIMIT,
+  LOG_RETENTION,
+  activeWakeWhere,
+  holdableWakeWhere,
+  identityThenDead,
+  isRepeatingWake,
+  isLeadRowClosedHold,
+  isUnclassifiablePaneHold,
+  isUnsubmittedInputHold,
+  pendingOneShotWhere,
+  repeatingFiringPendingWhere,
+  repeatingSocketAwaitingWhere,
+  repeatingSocketFiringWhere,
+  repeatingWakeWhere,
+  schedulerCandidateWhere,
+  sentWakeAtSql,
+  socketAwaitingWhere,
+  spentUntypedNotice,
+  wasHeldForPaneIdentity,
+  wasHeldForPaneReissue,
+  watchWatchingWhere,
+} from "./wakeSql.js";
+export {
+  ACTIVE_TIMER_WHERE,
+  DELIVERY_METHOD,
+  HELD_REASON_ACTOR_CLOSED,
+  HELD_REASON_CONVERSATION,
+  HELD_REASON_COPY_MODE,
+  HELD_REASON_LEAD_PANE_DEAD,
+  HELD_REASON_UNCLASSIFIABLE_PANE,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  HELD_REASON_UNSUBMITTED_INPUT,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  isLeadRowClosedHold,
+  isUnclassifiablePaneHold,
+  isUnsubmittedInputHold,
+  socketAwaitingWhere,
+  wasHeldForPaneIdentity,
+  wasHeldForPaneReissue,
+} from "./wakeSql.js";
+import { parseStoreTimestamp } from "./storeClock.js";
+import { runningBuildChange, runningBuildNotice, versionInfo } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
+import { decodeKvValue } from "./kvValue.js";
+import { continueLimitedCodexWorkers, observeUsageLimit, usageLimitGate } from "./usageLimit.js";
 import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
+import { InvalidClockRuleError, nextClockDue, validateClockRule } from "./wakeClock.js";
 import { snapshotProcesses } from "./processes.js";
 import { loadProjectYml } from "./projectYml.js";
 import { getProjectByPath, listProjects, queenHomeDir } from "./context.js";
@@ -15,14 +83,14 @@ import { QUEEN_GENERATED_MARKER, readQueenBrief, renderQueenDashboard } from "./
 import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
 import {
   closeAgentRow,
-  isLeadActorId,
-  LEAD_ACTOR_PREFIX,
-  LEAD_KIND,
   PaneOwnershipLost,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
 } from "./spawn.js";
-import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
+import {
+  isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND,
+} from "./agentKinds.js";
+import { awaitingFirstPrompt, finishedIdle, finishedIdleSql } from "./firstPrompt.js";
 import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneReaders } from "./leadWatch.js";
 import {
   describeLiveTasks,
@@ -32,6 +100,22 @@ import {
   STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
+import { PANE_LEASE_SETTLE_MS, maintainLeaseWaiters, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
+import {
+  CROSS_SESSION_CLOSE,
+  quietMessagingHooksLaunched,
+  postClaudeWake,
+  promptMarkerEvidenceSql,
+  quietMessagingOn,
+  socketGraceDue,
+  socketSenderAddress,
+  SOCKET_WAKE_FOOTER,
+} from "./claudeWake.js";
+import { driveLeadHandoff } from "./leadHandoff.js";
+import { handoffHoldsWake } from "./leadHandoffState.js";
+import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
+import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
+import { markWorkerLost, WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir, readContextFill, type ContextWorker } from "./transcript.js";
 import {
@@ -61,6 +145,7 @@ import {
   sleep,
   tmuxSocketPath,
   type AliveSnapshot,
+  type InputBoxSnapshot,
   type InputBoxState,
   type RowOwnership,
   type RowPaneIdentity,
@@ -87,6 +172,9 @@ export interface TimerRow {
   due_at: string | null;
   max_wait_at: string | null;
   repeat_every_ms: number | null;
+  clock_at: string | null;
+  clock_zone: string | null;
+  clock_repeat: string | null;
   created_at: string;
   fired_at: string | null;
   cancelled_at: string | null;
@@ -110,6 +198,13 @@ export interface TimerRow {
   deliver_row_id: number | null;
   deliver_row_status: string | null;
   deliver_row_target: string;
+  deliver_messaging_socket: string;
+  deliver_messaging_pane_pid: string;
+
+  delivery_method: string | null;
+  delivered_by: string | null;
+  socket_attempt_at: string | null;
+  socket_delivery_note: string | null;
 
   watch_scope: string | null;
 
@@ -117,6 +212,9 @@ export interface TimerRow {
 }
 
 export const WATCH_SCOPE_PROJECT = "project";
+const DELIVERED_BY = `pid ${process.pid}, ${versionInfo().line}`;
+const deliveredByForFiring = (timer: Pick<TimerRow, "repeat_every_ms" | "clock_repeat" | "fire_count">): string =>
+  isRepeatingWake(timer) ? `${DELIVERED_BY}, firing #${timer.fire_count}` : DELIVERED_BY;
 
 const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
 
@@ -129,7 +227,9 @@ const DELIVER_ROW_COLUMNS = `COALESCE(agents.tmux_socket, '') AS deliver_socket,
   COALESCE(agents.pane_pid, '') AS deliver_pane_pid,
   COALESCE(agents.command, '') AS deliver_command,
   agents.id AS deliver_row_id, agents.status AS deliver_row_status,
-  COALESCE(agents.tmux_target, '') AS deliver_row_target`;
+  COALESCE(agents.tmux_target, '') AS deliver_row_target,
+  COALESCE(agents.claude_messaging_socket, '') AS deliver_messaging_socket,
+  COALESCE(agents.claude_messaging_pane_pid, '') AS deliver_messaging_pane_pid`;
 
 type DeliveryRow = Pick<
   TimerRow,
@@ -143,7 +243,7 @@ type DeliveryRow = Pick<
   | "deliver_row_target"
 >;
 
-// "raw" is a wake with no agents row behind its actor (resolveDelivery's TMUX_PANE fallback): pane-addressed.
+// "raw" is a wake with no agents row behind its actor (resolveWakeDelivery's TMUX_PANE fallback): pane-addressed.
 type DeliveryOwnership = RowOwnership | "closed" | "raw";
 
 // A row's pid certifies only the pane that row records, never a different deliver_pane.
@@ -158,9 +258,6 @@ function deliveryOwnership(row: DeliveryRow, snapshot: AliveSnapshot | null): De
   if (row.deliver_row_status !== "running") return "closed";
   return rowOwnership(deliveryIdentity(row), snapshot);
 }
-
-export const ACTIVE_TIMER_WHERE =
-  "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 const SETTLE_WINDOW = "-15 seconds";
 
@@ -200,7 +297,7 @@ export function startScheduler(intervalMs = DEFAULT_SCHEDULER_INTERVAL_MS): void
 
 const CREW_ROW_COLUMNS =
   "id, project_id, name, actor_id, kind, cwd, tmux_target, tmux_socket, pane_pid, session_id, agent_state, " +
-  "state_changed_at, created_at";
+  "state_changed_at, created_at, recovery_state";
 
 interface CrewRowForRecord {
   id: number;
@@ -216,6 +313,7 @@ interface CrewRowForRecord {
   agent_state: string | null;
   state_changed_at: string | null;
   created_at: string;
+  recovery_state: "" | "pending" | "excluded";
 }
 
 // Set only from a tick that SAW panes, so it separates "hive watched this socket die" from "hive
@@ -314,12 +412,13 @@ function reapClosedCodexHomes(): number {
   let reaped = 0;
   try {
     const rows = stmt(
-      "SELECT id, codex_home FROM agents WHERE codex_home != '' AND status = 'closed' AND parked_at = ''",
-    ).all() as { id: number; codex_home: string }[];
+      `SELECT id, codex_home FROM agents
+        WHERE codex_home != '' AND status = 'closed' AND parked_at = ''
+          AND (recovery_state != 'pending' OR closed_at <= datetime('now', ?))`,
+    ).all(`-${WORKER_RECOVERY_RETENTION_SECONDS} seconds`) as { id: number; codex_home: string }[];
     for (const row of rows) {
       try {
-        reapCodexHomeForClosedAgent(row.id, row.codex_home);
-        reaped += 1;
+        if (reapCodexHomeForClosedAgent(row.id, row.codex_home) !== null) reaped += 1;
       } catch {
 
       }
@@ -341,15 +440,15 @@ function reportDeadProcess(agent: CrewRowForRecord, snapshot: AliveSnapshot): vo
     // interrupted between the two is not reported as a crash.
     if (stoppingMarkerLive(agent.project_id, agent.id)) return;
     const lead = stmt(
-      `SELECT actor_id, tmux_target, tmux_socket, pane_pid FROM agents
+      `SELECT actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents
         WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id DESC LIMIT 1`,
     ).get(agent.project_id, LEAD_KIND) as
-      | ({ actor_id: string } & RowPaneIdentity)
+      | ({ actor_id: string; command: string } & RowPaneIdentity)
       | undefined;
 
     // Never mint a notice hive could not deliver: with no live lead pane there is nobody this could
     // ever reach, and the row would sit in wakes forever.
-    if (!lead?.tmux_target || rowOwnership(lead, snapshot) !== "live") return;
+    if (!lead?.tmux_target || !screenClassifiable(lead.command) || rowOwnership(lead, snapshot) !== "live") return;
     insertNotice(
       { project_id: agent.project_id, owner: lead.actor_id },
       lead.actor_id,
@@ -420,7 +519,19 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
 
       // The conditional UPDATE is the claim: two instances probing the same dead socket both reach
       // this branch, and only the one that actually closed the row may put it in a record.
-      if (closeAgentRow(agent.id)) {
+      const identity = {
+        tmux_target: agent.tmux_target,
+        tmux_socket: agent.tmux_socket,
+        pane_pid: agent.pane_pid,
+      };
+      const closed = agent.kind === "agent"
+        ? agent.recovery_state === "excluded"
+          ? closeAgentRow(agent.id, identity)
+          : snapshot?.serverAnswered === true
+            ? markWorkerLost(agent.id, identity)
+            : closeAgentRow(agent.id, identity)
+        : closeAgentRow(agent.id, identity);
+      if (closed) {
         closedAgents += 1;
         swept.push(agent);
       }
@@ -483,7 +594,7 @@ function cancelWithReason(timerId: number, reason: string): void {
   );
 }
 
-export const LOG_RETENTION = "-7 days";
+export { LOG_RETENTION } from "./wakeSql.js";
 const LOG_MAX_ROWS = 20_000;
 
 function pruneStateLog(): void {
@@ -644,7 +755,12 @@ const QUEEN_PAGE_CLAIM_KEY = "hive:queen-page-claim";
 const QUEEN_PAGE_MARK_KEY = "hive:queen-page-mark";
 
 function claimQueenPageAttempt(queenId: number): boolean {
-  bestEffortRun("INSERT OR IGNORE INTO kv (project_id, key, value, updated_at) VALUES (?, ?, '', '1970-01-01 00:00:00')", queenId, QUEEN_PAGE_CLAIM_KEY);
+  bestEffortRun(
+    "INSERT OR IGNORE INTO kv (project_id, key, value, updated_at) VALUES (?, ?, ?, '1970-01-01 00:00:00')",
+    queenId,
+    QUEEN_PAGE_CLAIM_KEY,
+    JSON.stringify(""),
+  );
   return (
     stmt(
       `UPDATE kv SET updated_at = datetime('now')
@@ -658,7 +774,9 @@ function readQueenPageMark(queenId: number): string | null {
   const row = stmt("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queenId, QUEEN_PAGE_MARK_KEY) as
     | { value: string }
     | undefined;
-  return row?.value ?? null;
+  if (!row) return null;
+  const value = decodeKvValue(row.value);
+  return typeof value === "string" ? value : row.value;
 }
 
 function publishQueenPage(queenId: number, target: string, page: { html: string; hash: string }): void {
@@ -668,7 +786,7 @@ function publishQueenPage(queenId: number, target: string, page: { html: string;
      ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
     queenId,
     QUEEN_PAGE_MARK_KEY,
-    page.hash,
+    JSON.stringify(page.hash),
   );
 }
 
@@ -709,24 +827,57 @@ function maybeGenerateDashboards(): void {
 }
 
 export function checkConfirmations(): void {
-  const confirmationQuery = `
-       SELECT MIN(created_at) FROM agent_state_log
-        WHERE actor_id = wakes.deliver_actor AND event = 'prompt' AND created_at >= wakes.typed_at
-          AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
-               OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
+  const sentAt = sentWakeAtSql("wakes.");
+  const confirmationQuery = promptEvidenceSql(sentAt);
   try {
     const pending = stmt(
       `SELECT 1 AS hit FROM wakes
-        WHERE typed_at IS NOT NULL AND confirmed_at IS NULL AND typed_at >= datetime('now', ?) LIMIT 1`,
+        WHERE ${sentAt} IS NOT NULL AND confirmed_at IS NULL AND ${sentAt} >= datetime('now', ?) LIMIT 1`,
     ).get(LOG_RETENTION);
     if (!pending) return;
     stmt(
+      `UPDATE wakes SET confirmed_at = (${repeatingEvidenceSql("MIN(ev.created_at)")})
+       WHERE ${REPEATING_SOCKET_FIRING} AND socket_attempt_at IS NOT NULL AND confirmed_at IS NULL
+         AND socket_attempt_at >= datetime('now', ?)
+         AND EXISTS (${repeatingEvidenceSql("1")})`,
+    ).run(LOG_RETENTION);
+    stmt(
       `UPDATE wakes SET confirmed_at = (${confirmationQuery})
-       WHERE typed_at IS NOT NULL AND confirmed_at IS NULL AND typed_at >= datetime('now', ?)
+       WHERE ${sentAt} IS NOT NULL AND confirmed_at IS NULL AND ${sentAt} >= datetime('now', ?)
+         AND NOT (${REPEATING_SOCKET_FIRING})
          AND EXISTS (${confirmationQuery.replace("MIN(created_at)", "1")})`,
     ).run(LOG_RETENTION);
   } catch {
 
+  }
+}
+
+// Only the lead's own server drives its handoff; every server honours the hold it produces.
+function driveOwnLeadHandoff(): void {
+  const actor = process.env.HIVE_AGENT_ID;
+  if (!actor || !isLeadActorId(actor)) return;
+  try {
+    driveLeadHandoff(actor, (path) => loadProjectYml(path).config?.lead_turn_budget ?? null);
+  } catch {
+
+  }
+}
+
+function isolated(label: string, task: () => unknown | Promise<unknown>): void | Promise<void> {
+  const report = (err: unknown): void => {
+    try {
+      console.error(`[scheduler] ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+
+    }
+  };
+  try {
+    const result = task();
+    if (result !== null && typeof result === "object" && "then" in result) {
+      return Promise.resolve(result).then(() => {}, report);
+    }
+  } catch (err) {
+    report(err);
   }
 }
 
@@ -742,37 +893,48 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     }
 
     if (snapshot === undefined) snapshot = liveTargets();
-    janitor(snapshot);
-    if (snapshot) reportRunningBuildChange(snapshot);
+    const tickSnapshot = snapshot;
+    isolated("janitor", () => janitor(tickSnapshot));
+    isolated("lease waiters", maintainLeaseWaiters);
+    if (tickSnapshot) isolated("running-build check", () => reportRunningBuildChange(tickSnapshot));
+    isolated("lead handoff", driveOwnLeadHandoff);
 
-    checkConfirmations();
-    pruneStateLog();
+    isolated("wake confirmations", checkConfirmations);
+    isolated("state-log pruning", pruneStateLog);
 
-    maybeBackupHourly(db, dataDir);
+    isolated("hourly backup", () => maybeBackupHourly(db, dataDir));
 
-    maybeGenerateDashboards();
+    isolated("dashboard generation", maybeGenerateDashboards);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
+
+    await isolated("Codex usage-limit continuation", () => continueLimitedCodexWorkers(Date.now()));
 
     const candidates = stmt(
       `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
          FROM wakes ${DELIVER_SOCKET_JOIN}
-        WHERE wakes.cancelled_at IS NULL AND (
-         (wakes.kind = 'delay' AND wakes.due_at <= datetime('now')
-           AND (wakes.fired_at IS NULL OR wakes.repeat_every_ms IS NOT NULL))
-         OR (wakes.kind != 'delay' AND wakes.fired_at IS NULL)
-       )`,
+        WHERE ${schedulerCandidateWhere("wakes.")}
+        ORDER BY wakes.id`,
     ).all() as TimerRow[];
+    const orderedDelays = candidates
+      .filter((timer) => timer.kind === "delay")
+      .sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? "") || a.id - b.id);
+    let delayIndex = 0;
 
     const choices: ChoiceCache = new Map();
-    for (const timer of candidates) {
-      if (timer.kind === "delay") {
-        await fireDelay(timer, snapshot, choices);
-        continue;
-      }
-      const leadWatch = leadSubscription(timer.id);
-      if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, snapshot, now, choices);
-      else await maybeFireIdle(timer, snapshot, now, choices);
+    for (const candidate of candidates) {
+      const timer = candidate.kind === "delay" ? orderedDelays[delayIndex++] : candidate;
+      await isolated(`timer ${timer.id}`, async () => {
+        if (timer.kind === "delay") {
+          await fireDelay(timer, tickSnapshot, choices);
+          return;
+        }
+        const leadWatch = leadSubscription(timer.id);
+        if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, tickSnapshot, now, choices);
+        else await maybeFireIdle(timer, tickSnapshot, now, choices);
+      });
     }
+    await isolated("unconfirmed socket wake retry", () => retryUnconfirmedSocketWakes(tickSnapshot, choices));
+    await isolated("quiet lead message retry", () => retryQuietLeadMessages(tickSnapshot));
   } catch {
 
   } finally {
@@ -780,9 +942,13 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
   }
 }
 
-type ChoiceCache = Map<string, { choice?: boolean | null; box?: InputBoxState | null }>;
+type ChoiceCache = Map<string, { choice?: boolean | null; box?: InputBoxState | null; snapshot?: InputBoxSnapshot | null }>;
 
-function cacheEntry(pane: string, cache: ChoiceCache): { choice?: boolean | null; box?: InputBoxState | null } {
+function cacheEntry(pane: string, cache: ChoiceCache): {
+  choice?: boolean | null;
+  box?: InputBoxState | null;
+  snapshot?: InputBoxSnapshot | null;
+} {
   let entry = cache.get(pane);
   if (!entry) {
     entry = {};
@@ -834,115 +1000,72 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
   noDialogUntil.delete(pane);
 }
 
-function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void {
+function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRow, "fire_count">>, reason: string): void {
+  const count = timer.fire_count ?? null;
   bestEffortRun(
     `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
        first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-     WHERE id = ? AND cancelled_at IS NULL
-       AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?))`,
+     WHERE id = ? AND ${holdableWakeWhere()}`,
     reason,
     timer.id,
     timer.due_at,
+    count,
+    count,
   );
 }
 
-const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
-export const HELD_REASON_LEAD_PANE_DEAD =
-  "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
-  "cancellation for this alone, so it is held rather than lost";
-
-const HELD_REASON_PANE_REISSUED_PREFIX =
-  "the pane id recorded for this wake now belongs to a different pane than the one it was set " +
-  "against (its pid no longer matches, most likely a tmux server restart reissuing the id); held " +
-  "rather than typed into the wrong pane - ";
-const HELD_REASON_PANE_REISSUED_LEAD =
-  `${HELD_REASON_PANE_REISSUED_PREFIX}run \`hive lead\` to re-point it at the live one`;
-const HELD_REASON_PANE_REISSUED_WORKER =
-  `${HELD_REASON_PANE_REISSUED_PREFIX}nothing re-points a worker's wake automatically, so cancel ` +
-  "it with wake_cancel and set a fresh one once the worker's pane is confirmed live, or leave it: " +
-  "it will keep holding rather than deliver wrongly";
-
-const HELD_REASON_PANE_REISSUED_THEN_DEAD =
-  `${HELD_REASON_PANE_REISSUED_PREFIX}the pane it was reissued to has since gone dead too; nothing ` +
-  "re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may do " +
-  "this even though the wake is not theirs) if it is no longer needed";
-export function wasHeldForPaneReissue(heldReason: string | null): boolean {
-  return heldReason != null && heldReason.startsWith(HELD_REASON_PANE_REISSUED_PREFIX);
+function usageLimitHeld(timer: TimerRow): boolean {
+  if (timer.deliver_row_id === null) return false;
+  const now = Date.now();
+  observeUsageLimit(timer.deliver_row_id, now);
+  const gate = usageLimitGate(timer.deliver_row_id, now);
+  if (!gate.held) return false;
+  holdTimer(timer, `${HELD_REASON_USAGE_LIMIT}${gate.until ?? "the recorded deadline"}`);
+  return true;
 }
 
-const HELD_REASON_PANE_UNKNOWN_PREFIX =
-  "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now " +
-  "records a different pane, or the pane is on another tmux socket); held rather than typed into a pane " +
-  "that may not be its own - ";
-const HELD_REASON_PANE_UNKNOWN_LEAD =
-  `${HELD_REASON_PANE_UNKNOWN_PREFIX}run \`hive lead\` to start or adopt a lead with a recorded pane and re-point it`;
-const HELD_REASON_PANE_UNKNOWN_WORKER =
-  `${HELD_REASON_PANE_UNKNOWN_PREFIX}nothing re-points a worker's wake automatically, so cancel it with ` +
-  "wake_cancel (any running lead may, even though the wake is not theirs), or leave it: it keeps holding " +
-  "rather than deliver wrongly";
-const HELD_REASON_PANE_UNKNOWN_THEN_DEAD =
-  `${HELD_REASON_PANE_UNKNOWN_PREFIX}that pane has since gone dead too; nothing re-points a worker's wake ` +
-  "automatically, so cancel it with wake_cancel (any running lead may) if it is no longer needed";
-
-// One family for both identity holds, so a later dead pane re-holds them instead of cancelling.
-export function wasHeldForPaneIdentity(heldReason: string | null): boolean {
-  return wasHeldForPaneReissue(heldReason) || (heldReason?.startsWith(HELD_REASON_PANE_UNKNOWN_PREFIX) ?? false);
+class UsageLimitRace extends Error {
+  constructor(readonly until: string) { super(`${HELD_REASON_USAGE_LIMIT}${until}`); }
 }
 
-const identityThenDead = (heldReason: string | null): string =>
-  wasHeldForPaneReissue(heldReason) ? HELD_REASON_PANE_REISSUED_THEN_DEAD : HELD_REASON_PANE_UNKNOWN_THEN_DEAD;
-
-export const HELD_REASON_ACTOR_CLOSED =
-  "delivery actor closed: the row this wake was bound to is closed, so nothing was typed and the wake was " +
-  "cancelled rather than delivered into a pane that row no longer owns";
-const HELD_REASON_LEAD_ROW_CLOSED =
-  "the lead's row is closed, so no pane is this wake's to type into; held until `hive lead` starts or adopts a " +
-  "lead and re-points it";
-
-export function isLeadRowClosedHold(heldReason: string | null): boolean {
-  return heldReason === HELD_REASON_LEAD_ROW_CLOSED;
-}
-const HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM = "delivery stopped after claim: ";
-
-export const HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX =
-  "the pane's harness is not one hive can classify; ";
-export const HELD_REASON_UNCLASSIFIABLE_PANE =
-  `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}neither the dialog guard nor the unsubmitted-text ` +
-  "guard can read this screen and delivery would type blind. wake_set and wake_when_idle refuse such a " +
-  "target outright now, so this wake predates that or its pane's command changed underneath it. Nothing " +
-  "hive does on its own clears this: it lifts only when that pane is replaced by one hive starts itself " +
-  "(`hive lead` after the pane exits). Cancel it with wake_cancel (any running lead may, even though the " +
-  "wake is not theirs) and drive that pane with agent_send(keys: [...])";
-
-export function isUnclassifiablePaneHold(heldReason: string | null): boolean {
-  return heldReason != null && heldReason.startsWith(HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX);
+function unclaimUsageLimit(timer: TimerRow, until: string): void {
+  try {
+    stmt(`UPDATE wakes SET due_at = ?, fired_at = NULL, fire_count = MAX(0, fire_count - 1),
+        typed_at = NULL, typed_busy = NULL, typed_seen = NULL, confirmed_at = NULL,
+        held_at = datetime('now'), held_reason = ?, first_held_at = COALESCE(first_held_at, datetime('now')),
+        socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL, delivered_by = NULL
+      WHERE id = ? AND fire_count = ? AND typed_at IS NULL AND cancelled_at IS NULL`)
+      .run(timer.due_at, `${HELD_REASON_USAGE_LIMIT}${until}`, timer.id, timer.fire_count);
+  } catch {}
 }
 
-export const HELD_REASON_COPY_MODE =
-  "the pane is in tmux copy mode; tmux clears its bracketed-paste flag there, so the body would arrive " +
-  "with no paste markers (losing everything before the last 1022-byte write) and the Enter would be " +
-  "eaten by the mode instead of submitting - both silently, with tmux reporting success. It delivers " +
-  "once whoever is reading that pane leaves copy mode";
+const LEAD_BOOT_BOX_WAIT_MS = 60_000;
 
-export const HELD_REASON_UNSUBMITTED_INPUT_PREFIX = "the pane's input box has unsubmitted human text; ";
-export const HELD_REASON_UNSUBMITTED_INPUT =
-  `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}delivering now would paste the wake body onto it and submit ` +
-  "both as one message";
-
-// Distinct from HELD_REASON_UNSUBMITTED_INPUT so the claim's debounce doesn't latch a transient
-// pane-resolution failure shut forever - the next tick retries instead of giving up permanently.
-const HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED =
-  `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}hive could not resolve a live pane for the wake's owner on ` +
-  "this tick - retrying, since that may be transient rather than permanent";
-
-export function isUnsubmittedInputHold(heldReason: string | null): boolean {
-  return heldReason != null && heldReason.startsWith(HELD_REASON_UNSUBMITTED_INPUT_PREFIX);
+function leadBootSessionIsFresh(agentId: number, panePid: string): boolean {
+  const row = stmt(
+    "SELECT pane_started_at FROM agents WHERE id = ? AND pane_pid = ?",
+  ).get(agentId, panePid) as { pane_started_at: string | null } | undefined;
+  if (!row?.pane_started_at) return false;
+  const timestamp = parseStoreTimestamp(row.pane_started_at);
+  return Number.isFinite(timestamp) && Date.now() - timestamp < LEAD_BOOT_BOX_WAIT_MS;
 }
 
-export const HELD_REASON_CONVERSATION =
-  "a human talked to this lead more recently than the conversation-hold window; holding so a wake " +
-  "does not split an in-progress discussion - it delivers once the window passes or the hold's own " +
-  "ceiling is reached, whichever comes first";
+function leadInputBoxObservation(
+  pane: string,
+  command: string,
+  cache: ChoiceCache,
+): { captured: boolean; box: InputBoxState | null } {
+  const entry = cacheEntry(pane, cache);
+  if (entry.snapshot === undefined) {
+    entry.snapshot = paneClassifierFor(command)?.inputBoxSnapshot?.(pane) ?? null;
+  }
+  if (entry.snapshot === null) {
+    entry.box = null;
+    return { captured: false, box: null };
+  }
+  entry.box = entry.snapshot.box;
+  return { captured: true, box: entry.snapshot.box };
+}
 
 // A human message keeps a lead-bound wake held for this long after it lands. Measured deferral rates
 // for this and CONVERSATION_HOLD_MAX are in hive-internals/references/worker-state.md.
@@ -967,10 +1090,10 @@ function conversationHoldsWake(timer: TimerRow, snapshot: AliveSnapshot | null):
   return (
     stmt(
       `SELECT 1 AS hit FROM agent_state_log
-        WHERE actor_id = ? AND event = 'prompt' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '%[hive wake #%' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '[hive:%'
+        WHERE actor_id = ? AND event = 'prompt' AND state != ? AND ${humanPromptSql("payload")}
           AND created_at >= datetime('now', ?)
         ORDER BY id DESC LIMIT 1`,
-    ).get(timer.deliver_actor, CONVERSATION_HOLD_TTL) !== undefined
+    ).get(timer.deliver_actor, FIRST_MESSAGE_LOG_STATE, CONVERSATION_HOLD_TTL) !== undefined
   );
 }
 
@@ -1115,7 +1238,7 @@ function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]):
   const placeholders = conditions.map(() => "?").join(", ");
   return stmt(
     `SELECT t.id FROM wakes t
-      WHERE t.parent_wake_id = ? AND t.fired_at IS NULL AND t.cancelled_at IS NULL
+      WHERE t.parent_wake_id = ? AND ${pendingOneShotWhere("t.")}
         AND EXISTS (
           SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = t.id AND n.condition IN (${placeholders})
         )
@@ -1127,7 +1250,7 @@ function updateNoticeInPlace(noticeId: number, body: string): boolean {
   return (
     stmt(
       `UPDATE wakes SET body = ?, created_at = datetime('now')
-        WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`,
+        WHERE id = ? AND ${pendingOneShotWhere()}`,
     ).run(body, noticeId).changes === 1
   );
 }
@@ -1148,9 +1271,9 @@ const claimModalHoldWithNotice = db.transaction(
       stmt(
         `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-          WHERE id = ? AND cancelled_at IS NULL
+          WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
+            AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ?
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_MODAL_CHOICE,
@@ -1158,6 +1281,9 @@ const claimModalHoldWithNotice = db.transaction(
         timer.due_at,
         timer.body,
         timer.repeat_every_ms,
+        timer.clock_at,
+        timer.clock_zone,
+        timer.clock_repeat,
         HELD_REASON_MODAL_CHOICE,
       ).changes === 1;
     if (!claimed) return false;
@@ -1198,9 +1324,9 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
       stmt(
         `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-          WHERE id = ? AND cancelled_at IS NULL
+          WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
+            AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ?
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_UNSUBMITTED_INPUT,
@@ -1208,6 +1334,9 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
         timer.due_at,
         timer.body,
         timer.repeat_every_ms,
+        timer.clock_at,
+        timer.clock_zone,
+        timer.clock_repeat,
         HELD_REASON_UNSUBMITTED_INPUT,
       ).changes === 1;
     if (!claimed) return false;
@@ -1292,7 +1421,7 @@ function blockedWatchedAgents(
 
 const stillPending = (timerId: number): boolean =>
   stmt(
-    `SELECT 1 AS hit FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+    `SELECT 1 AS hit FROM wakes WHERE id = ? AND ${pendingOneShotWhere()}`,
   ).get(timerId) !== undefined;
 
 const claimBlockNoticeWithNotice = db.transaction(
@@ -1385,9 +1514,8 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
 const CONDITION_IDLE = "idle";
 const CONDITION_GONE = "gone";
 
-const NOTICE_RETRY_AFTER = "-60 seconds";
-
 const NOTICE_MAX_AGE = "-1 hours";
+const PANE_CAPTURE_UNKNOWN_MAX_AGE = "-1 hours";
 
 const ROSTER_STILL_GOING = 8;
 
@@ -1399,8 +1527,7 @@ const STANDING_EXPIRED_NOTE =
 const unreported = (condition: string, episode: string): string => `NOT EXISTS (
     SELECT 1 FROM wake_idle_notices n LEFT JOIN wakes nt ON nt.id = n.notice_wake_id
      WHERE n.wake_id = ? AND n.agent_id = a.id AND n.condition = '${condition}' AND n.episode = ${episode}
-       AND NOT (nt.fired_at IS NOT NULL AND nt.typed_at IS NULL AND nt.cancelled_at IS NULL
-                AND nt.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')))`;
+       AND NOT (${spentUntypedNotice("nt")}))`;
 
 const CREW_COLUMNS =
   `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.pane_pid, a.agent_state,
@@ -1445,7 +1572,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
           AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.owner, timer.id) as CrewRow[]
-  ).filter((row) => !awaitingFirstPrompt(row));
+  ).filter(finishedIdle);
 }
 
 function standingGoneRows(timer: TimerRow): CrewRow[] {
@@ -1453,7 +1580,7 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
     `SELECT ${CREW_COLUMNS}, a.closed_at AS episode
        FROM agents a
       WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed' AND a.actor_id != ?
-        AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")})
+        AND NOT (${finishedIdleSql("a")})
         AND a.parked_at = ''
         AND a.closed_at IS NOT NULL
         ${OWNED_BY_WATCH}
@@ -1469,7 +1596,7 @@ export function markGoneReported(agentId: number, projectId: number): void {
          FROM wakes t
          JOIN agents a ON a.id = ?
         WHERE t.project_id = ? AND t.kind = 'idle_any' AND t.watch_scope IS NOT NULL
-          AND t.cancelled_at IS NULL AND t.fired_at IS NULL
+          AND ${pendingOneShotWhere("t.")}
           AND a.closed_at IS NOT NULL`,
   ).run(agentId, projectId);
 }
@@ -1533,7 +1660,7 @@ function stillGoingRows(timer: TimerRow): StillGoingRow[] | null {
       `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind, a.resumed_at
          FROM agents a
         WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
-          AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")}) AND a.actor_id != ?
+          AND NOT (${finishedIdleSql("a")}) AND a.actor_id != ?
           ${OWNED_BY_WATCH}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.owner) as StillGoingRow[];
@@ -1700,7 +1827,7 @@ function standingNoticeBody(
     shown = rows
       .slice(0, ROSTER_STILL_GOING)
       .map((r) =>
-        awaitingFirstPrompt(r) && r.agent_state === "idle"
+        r.agent_state === "idle" && !finishedIdle(r)
           ? `${r.name} (awaiting first assignment)`
           : `${r.name} (${stateNowClause(r)})`,
       );
@@ -1725,15 +1852,14 @@ function standingNoticeBody(
   return lines.join("\n");
 }
 
-function rearmSpentEpisode(timerId: number, agentId: number, condition: string, episode: string): void {
-  stmt(
+function rearmSpentEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
+  return stmt(
     `DELETE FROM wake_idle_notices
       WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ?
         AND notice_wake_id IS NOT NULL
         AND EXISTS (SELECT 1 FROM wakes t WHERE t.id = wake_idle_notices.notice_wake_id
-                      AND t.fired_at IS NOT NULL AND t.typed_at IS NULL AND t.cancelled_at IS NULL
-                      AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
-  ).run(timerId, agentId, condition, episode);
+                      AND ${spentUntypedNotice("t")})`,
+  ).run(timerId, agentId, condition, episode).changes > 0;
 }
 
 function claimEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
@@ -1942,9 +2068,16 @@ const claimStallBatch = db.transaction(
     if (!stillPending(timer.id)) return false;
     const won: StallCandidate[] = [];
     for (const c of candidates) {
-      if (c.row.agent_state === "waiting" && !claimBlockNotice(timer.id, c.row.id, c.row.episode)) continue;
-      rearmSpentEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
-      if (claimEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode)) won.push(c);
+      const rearmed = rearmSpentEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
+      if (!claimEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode)) continue;
+      if (c.row.agent_state === "waiting" && !rearmed && !claimBlockNotice(timer.id, c.row.id, c.row.episode)) {
+        stmt(
+          `DELETE FROM wake_idle_notices
+            WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ? AND notice_wake_id IS NULL`,
+        ).run(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
+        continue;
+      }
+      won.push(c);
     }
 
     if (won.length === 0) return false;
@@ -2009,7 +2142,7 @@ function noticeDisposition(timer: TimerRow): NoticeDisposition {
   try {
     const check = stmt(
       `SELECT (p.cancelled_at IS NULL) AS live,
-              (p.fired_at IS NOT NULL AND p.repeat_every_ms IS NULL) AS parent_finished,
+              (p.fired_at IS NOT NULL AND NOT ${repeatingWakeWhere("p.")}) AS parent_finished,
               (? >= datetime('now', ?)) AS fresh,
               EXISTS (SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = ?) AS finish_shaped
          FROM wakes p WHERE p.id = ?`,
@@ -2067,8 +2200,7 @@ function agedOutBody(timer: TimerRow): string {
 // up sitting finished and unnoticed - which this project has paid for twice.
 export function watchStillWatchingClause(timer: TimerRow): string {
   const parent = stmt(
-    `SELECT (cancelled_at IS NULL AND fired_at IS NULL
-             AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching,
+    `SELECT (${watchWatchingWhere()}) AS watching,
             (watch_scope IS NOT NULL) AS standing
        FROM wakes WHERE id = ?`,
   ).get(timer.parent_wake_id) as { watching: number; standing: number } | undefined;
@@ -2157,6 +2289,11 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     owner = { rowId: row.deliver_row_id!, identity: deliveryIdentity(row) };
   }
 
+  if (handoffHoldsWake(timer.id, row.deliver_row_id)) {
+    holdTimer(timer, HELD_REASON_HANDOFF);
+    return { ok: false };
+  }
+
   // Above both pane reads: this population must not be captured at all, and the verdicts would be
   // wrong in opposite directions if they were.
   if (!screenClassifiable(timer.deliver_command)) {
@@ -2164,14 +2301,36 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     return { ok: false };
   }
 
+  const releasedAfterCaptureHold = timer.held_reason === paneCaptureReleaseReason(timer.fire_count + 1);
   const dialog = awaitingChoice(timer.deliver_pane, timer.deliver_command, choices);
+  if (dialog === null && !releasedAfterCaptureHold && paneCaptureUnknownHoldApplies(timer)) {
+    holdTimer(timer, HELD_REASON_PANE_CAPTURE_UNKNOWN);
+    return { ok: false };
+  }
   if (dialog === true) {
 
     noteModalHold(timer, snapshot);
     return { ok: false };
   }
 
-  if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
+  const claudeLeadSnapshot =
+    isLeadActorId(timer.deliver_actor) && paneClassifierFor(timer.deliver_command)?.inputBoxSnapshot !== undefined;
+  if (claudeLeadSnapshot) {
+    const bootWindow = row.deliver_row_id !== null && leadBootSessionIsFresh(row.deliver_row_id, row.deliver_pane_pid);
+    const observation = leadInputBoxObservation(timer.deliver_pane, timer.deliver_command, choices);
+    if (!observation.captured) {
+      if (bootWindow) return { ok: false };
+    } else {
+      if (holdsHumanInput(observation.box)) {
+        noteUnsubmittedInputHold(timer, snapshot);
+        return { ok: false };
+      }
+      if (observation.box === null && bootWindow) {
+        holdTimer(timer, HELD_REASON_LEAD_BOOT_INPUT_BOX);
+        return { ok: false };
+      }
+    }
+  } else if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
     noteUnsubmittedInputHold(timer, snapshot);
     return { ok: false };
   }
@@ -2204,47 +2363,33 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   const box = boxState === undefined ? "unknown" : boxState === null ? "absent" : boxState.state;
   return {
     ok: true,
-    typedSeen: `live=yes pid=${pid} dialog=${dialogSeen} box=${box}`,
+    typedSeen: `live=yes pid=${pid} dialog=${dialogSeen} box=${box}${releasedAfterCaptureHold ? "; released after unreadable-capture hold" : ""}`,
 
     firstHeldAt: timer.held_at != null ? timer.first_held_at : null,
     owner,
   };
 }
 
-const PANE_CLAIM_TTL_SECONDS = 6;
-const PANE_CLAIM_SETTLE_MS = 500;
-
 const PANE_CLAIM_OWNER = "hive:scheduler";
-
-function acquirePaneClaim(projectId: number, key: string): string | null {
-  try {
-    stmt("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, 'hive scheduler', 'scheduler')").run(PANE_CLAIM_OWNER);
-    stmt("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')").run(projectId, key);
-    const row = stmt(
-      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
-       VALUES (?, ?, ?, datetime('now', printf('+%d seconds', ?)))
-       ON CONFLICT(project_id, lock_key) DO NOTHING
-       RETURNING expires_at`,
-    ).get(projectId, key, PANE_CLAIM_OWNER, PANE_CLAIM_TTL_SECONDS) as { expires_at: string } | undefined;
-    return row?.expires_at ?? null;
-  } catch {
-    return null;
-  }
-}
 
 // Serializes check-then-type per pane ACROSS scheduler instances: the per-wake claim is atomic but two
 // instances claiming different wakes for one pane would otherwise both paste before either submits.
 // A loser skips this tick and its wake stays unclaimed.
 async function withPaneClaim(timer: TimerRow, fn: () => Promise<boolean>): Promise<void> {
-  const key = `wake-pane:${timer.deliver_socket}:${timer.deliver_pane}`;
-  const held = timer.deliver_pane ? acquirePaneClaim(timer.project_id, key) : null;
+  const held = timer.deliver_pane
+    ? tryAcquirePaneLease(timer.project_id, timer.deliver_socket, timer.deliver_pane, {
+        id: PANE_CLAIM_OWNER,
+        name: "hive scheduler",
+        kind: "scheduler",
+      })
+    : null;
   if (held === null) return;
   try {
     // Settle: a slow TUI still showing the pasted text would make the next instance hold instead of type.
-    if (await fn()) await sleep(PANE_CLAIM_SETTLE_MS);
+    if (await fn()) await sleep(PANE_LEASE_SETTLE_MS);
   } finally {
     // Match this acquire's expires_at: after a TTL takeover the owner is shared, so owner alone would delete the taker's row.
-    bestEffortRun("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at = ?", timer.project_id, key, held);
+    releasePaneLease(timer.project_id, timer.deliver_socket, timer.deliver_pane, held);
   }
 }
 
@@ -2253,7 +2398,11 @@ async function fireDelay(
   snapshot: AliveSnapshot | null,
   choices: ChoiceCache,
 ): Promise<void> {
-
+  if (handoffHoldsWake(timer.id, timer.deliver_row_id)) {
+    holdTimer(timer, HELD_REASON_HANDOFF);
+    return;
+  }
+  if (usageLimitHeld(timer)) return;
   const disposition = noticeDisposition(timer);
   if (disposition === "aged") {
     try {
@@ -2271,7 +2420,83 @@ async function fireDelay(
     );
     return;
   }
-  await withPaneClaim(timer, () => fireDelayClaimed(timer, snapshot, choices));
+  if (isRepeatingWake(timer) && repeatingFiringPending(timer.id)) return;
+  const releaseReason = releaseExpiredPaneCaptureHold(timer);
+  const deliveryTimer = releaseReason === null ? timer : { ...timer, held_reason: releaseReason };
+  await withPaneClaim(deliveryTimer, () => fireDelayClaimed(deliveryTimer, snapshot, choices));
+}
+
+function holdInvalidClock(timer: TimerRow): void {
+  bestEffortRun(
+    `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
+       first_held_at = COALESCE(first_held_at, datetime('now'))
+     WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+       AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ? AND fire_count = ? AND cancelled_at IS NULL`,
+    HELD_REASON_INVALID_CLOCK,
+    timer.id,
+    timer.due_at,
+    timer.body,
+    timer.repeat_every_ms,
+    timer.clock_at,
+    timer.clock_zone,
+    timer.clock_repeat,
+    timer.fire_count,
+  );
+}
+
+function clockRuleValid(timer: TimerRow): boolean {
+  if (timer.clock_at === null && timer.clock_zone === null && timer.clock_repeat === null) return true;
+  try {
+    if (timer.clock_at === null || timer.clock_zone === null) throw new InvalidClockRuleError("invalid clock schedule");
+    if (timer.clock_repeat !== null && timer.clock_repeat !== "daily") {
+      throw new InvalidClockRuleError("invalid clock schedule");
+    }
+    validateClockRule(timer.clock_at, timer.clock_zone);
+    return true;
+  } catch {
+    holdInvalidClock(timer);
+    return false;
+  }
+}
+
+function paneCaptureReleaseReason(firing: number): string {
+  return `released after unreadable-capture hold at the one-hour cap for firing #${firing}`;
+}
+
+function paneCaptureUnknownHoldApplies(timer: TimerRow): boolean {
+  if (timer.deliver_row_id === null) return false;
+  return stmt(`SELECT 1 AS hit FROM agent_usage_limits
+    WHERE agent_id = ? AND (
+      (released_at IS NULL AND expires_at >= datetime('now', '-1 hour'))
+      OR released_at >= datetime('now', '-1 hour')
+    )`).get(timer.deliver_row_id) !== undefined;
+}
+
+function releaseExpiredPaneCaptureHold(timer: TimerRow): string | null {
+  if (timer.held_reason !== HELD_REASON_PANE_CAPTURE_UNKNOWN || timer.first_held_at === null) return null;
+  try {
+    const age = stmt("SELECT ? <= datetime('now', ?) AS expired").get(
+      timer.first_held_at,
+      PANE_CAPTURE_UNKNOWN_MAX_AGE,
+    ) as { expired: number };
+    if (age.expired !== 1) return null;
+    const reason = paneCaptureReleaseReason(timer.fire_count + 1);
+    const released = stmt(
+      `UPDATE wakes SET held_reason = ?
+       WHERE id = ? AND held_reason = ? AND first_held_at IS ? AND ${holdableWakeWhere()}`,
+    ).run(
+      reason,
+      timer.id,
+      HELD_REASON_PANE_CAPTURE_UNKNOWN,
+      timer.first_held_at,
+      timer.due_at,
+      timer.fire_count,
+      timer.fire_count,
+    );
+    return released.changes === 1 ? reason : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fireDelayClaimed(
@@ -2281,34 +2506,81 @@ async function fireDelayClaimed(
 ): Promise<boolean> {
   const decision = deliverable(timer, snapshot, choices);
   if (!decision.ok) return false;
-  let claimed: boolean;
-  if (timer.repeat_every_ms != null) {
-    const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
-
-    claimed =
-      stmt(
-        `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
-           fired_at = datetime('now'), fire_count = fire_count + 1,
-           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
-           typed_seen = NULL, first_held_at = NULL
-         WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
-      ).run(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1;
+  if (!clockRuleValid(timer)) return false;
+  let firing = timer;
+  if (isRepeatingWake(timer)) {
+    let nextDue: string | null = null;
+    if (timer.clock_repeat === "daily") {
+      try {
+        nextDue = nextClockDue(timer.clock_at ?? "", timer.clock_zone ?? "", Date.now());
+      } catch {
+        holdInvalidClock(timer);
+        return false;
+      }
+    }
+    const seconds = timer.repeat_every_ms == null ? null : Math.max(1, Math.round(timer.repeat_every_ms / 1000));
+    const dueUpdate = nextDue === null
+      ? "due_at = datetime('now', printf('+%d seconds', ?))"
+      : "due_at = ?";
+    const claimed = stmt(
+      `UPDATE wakes SET ${dueUpdate},
+         fired_at = datetime('now'), fire_count = fire_count + 1,
+         typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
+         typed_seen = NULL, first_held_at = NULL,
+         socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL, delivered_by = NULL
+       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+         AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ? AND cancelled_at IS NULL
+         AND fire_count = ? AND NOT COALESCE((${REPEATING_FIRING_PENDING}), 0)
+         AND NOT EXISTS (SELECT 1 FROM agent_usage_limits u WHERE u.agent_id =
+           (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
+             ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
+           AND u.released_at IS NULL AND u.expires_at > datetime('now'))
+       RETURNING fire_count, fired_at`,
+    ).get(
+      nextDue ?? seconds,
+      timer.id,
+      timer.due_at,
+      timer.body,
+      timer.repeat_every_ms,
+      timer.clock_at,
+      timer.clock_zone,
+      timer.clock_repeat,
+      timer.fire_count,
+    ) as
+      | { fire_count: number; fired_at: string }
+      | undefined;
+    if (claimed === undefined) return false;
+    firing = { ...timer, fire_count: claimed.fire_count, fired_at: claimed.fired_at, socket_attempt_at: null, socket_delivery_note: null, delivery_method: null };
   } else {
-    claimed = claimOneShot(timer);
+    const claimed = claimOneShot(timer);
+    if (!claimed) return false;
+    firing = { ...timer, ...claimed };
   }
-  if (!claimed) return false;
-  await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+  await deliver(firing, "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
   return true;
 }
 
-function claimOneShot(timer: TimerRow): boolean {
-  return (
-    stmt(
-      `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
+function claimOneShot(timer: TimerRow): { fire_count: number; fired_at: string } | null {
+  const claimed = stmt(
+    `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-         AND fired_at IS NULL AND cancelled_at IS NULL`,
-    ).run(timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1
-  );
+         AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ?
+         AND ${pendingOneShotWhere()}
+         AND NOT EXISTS (SELECT 1 FROM agent_usage_limits u WHERE u.agent_id =
+           (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
+             ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
+           AND u.released_at IS NULL AND u.expires_at > datetime('now'))
+       RETURNING fire_count, fired_at`,
+  ).get(
+    timer.id,
+    timer.due_at,
+    timer.body,
+    timer.repeat_every_ms,
+    timer.clock_at,
+    timer.clock_zone,
+    timer.clock_repeat,
+  ) as { fire_count: number; fired_at: string } | undefined;
+  return claimed ?? null;
 }
 
 const GONE: WatchedState = { idle: true, gone: true, since: null };
@@ -2340,7 +2612,7 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
     }
 
     return {
-      idle: !awaitingFirstPrompt(agent) && agent.agent_state === "idle",
+      idle: finishedIdle(agent),
       gone: false,
       since: agent.state_changed_at,
     };
@@ -2380,6 +2652,7 @@ async function maybeFireIdle(
   now: string,
   choices: ChoiceCache,
 ): Promise<void> {
+  if (usageLimitHeld(timer)) return;
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
 
   if (isStandingWatch(timer)) {
@@ -2391,8 +2664,10 @@ async function maybeFireIdle(
     if (timedOut) {
       await withPaneClaim(timer, async () => {
         const decision = deliverable(timer, snapshot, choices);
-        if (!decision.ok || !claimOneShot(timer)) return false;
-        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+        if (!decision.ok) return false;
+        const claimed = claimOneShot(timer);
+        if (!claimed) return false;
+        await deliver({ ...timer, ...claimed }, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
         return true;
       });
     }
@@ -2414,8 +2689,10 @@ async function maybeFireIdle(
   if (ready) {
     await withPaneClaim(timer, async () => {
       const decision = deliverable(timer, snapshot, choices);
-      if (!decision.ok || !claimOneShot(timer)) return false;
-      await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+      if (!decision.ok) return false;
+      const claimed = claimOneShot(timer);
+      if (!claimed) return false;
+      await deliver({ ...timer, ...claimed }, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
       return true;
     });
   }
@@ -2430,6 +2707,7 @@ async function maybeFireLeadWatch(
   now: string,
   choices: ChoiceCache,
 ): Promise<void> {
+  if (usageLimitHeld(timer)) return;
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
   const readers: PaneReaders = {
     awaitingChoice: (pane, command) => awaitingChoice(pane, command, choices),
@@ -2447,11 +2725,13 @@ async function maybeFireLeadWatch(
   if (note === null) return;
   await withPaneClaim(timer, async () => {
     const decision = deliverable(timer, snapshot, choices);
-    if (!decision.ok || !claimOneShot(timer)) return false;
+    if (!decision.ok) return false;
+    const claimed = claimOneShot(timer);
+    if (!claimed) return false;
     if (result.kind === "invalid") {
       bestEffortRun("UPDATE lead_idle_subscriptions SET terminal_reason = ? WHERE wake_id = ?", result.reason, timer.id);
     }
-    await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+    await deliver({ ...timer, ...claimed }, note, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
     return true;
   });
 }
@@ -2626,16 +2906,134 @@ export function shortRenderForLeadDelivery(timer: TimerRow): string | null {
 }
 
 // The claim already happened, so this records why and never re-arms or replays the wake.
-function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string): void {
+function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string, firing: number | null = null): void {
   bestEffortRun(
     `UPDATE wakes SET held_reason = ?,
        typed_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE typed_at END,
-       cancelled_at = CASE WHEN repeat_every_ms IS NULL THEN datetime('now') ELSE cancelled_at END
-     WHERE id = ?`,
+       cancelled_at = CASE WHEN NOT ${repeatingWakeWhere()} THEN datetime('now') ELSE cancelled_at END
+     WHERE id = ? AND (? IS NULL OR fire_count = ?)`,
     HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM + why + (pasted ? " The body was pasted; no Enter was sent." : ""),
     pasted ? 1 : 0,
     timer.id,
+    firing,
+    firing,
   );
+}
+
+const REPEATING_FIRING_PENDING = repeatingFiringPendingWhere();
+const REPEATING_SOCKET_FIRING = repeatingSocketFiringWhere();
+
+function repeatingFiringPending(id: number): boolean {
+  try {
+    return stmt(`SELECT 1 AS hit FROM wakes WHERE id = ? AND (${REPEATING_FIRING_PENDING})`).get(id) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+const firingMarker = (timer: Pick<TimerRow, "id" | "fire_count">): string => `[hive wake #${timer.id} firing #${timer.fire_count}`;
+const withReDelivered = (note: string | null): string => (note ? `${note}, re-delivered` : "re-delivered");
+
+const promptEvidenceSql = (lowerBound: string): string => `
+       SELECT MIN(created_at) FROM agent_state_log
+        WHERE actor_id = wakes.deliver_actor AND event = 'prompt' AND created_at >= ${lowerBound}
+          AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
+               OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
+
+const EV_MARKER = "('[hive wake #' || wakes.id || ' firing #' || wakes.fire_count)";
+const markerAt = (promptSql: string, startSql: string): string =>
+  `substr(${promptSql}, ${startSql}, length(${EV_MARKER}) + 1) IN (${EV_MARKER} || ']', ${EV_MARKER} || ',')`;
+
+// The current firing's exact marker, at prompt offset 0 (typed) or opening hive's envelope body (socket).
+const repeatingEvidenceSql = (select: string): string => `
+       SELECT ${select} FROM agent_state_log ev
+        WHERE ev.actor_id = wakes.deliver_actor AND ev.event = 'prompt' AND ev.created_at >= wakes.socket_attempt_at
+          AND ${promptMarkerEvidenceSql(markerAt)}`;
+
+// Only a wake to a live, row-owned Claude lead whose socket was registered by this pane epoch.
+function socketRoute(timer: TimerRow, owner: DeliveryOwner | null): boolean {
+  return (
+    owner !== null &&
+    isLeadActorId(timer.deliver_actor) &&
+    harnessFor(timer.deliver_command).name === "claude" &&
+    timer.deliver_messaging_socket !== "" &&
+    timer.deliver_messaging_pane_pid !== "" &&
+    timer.deliver_messaging_pane_pid === timer.deliver_pane_pid &&
+    timer.deliver_row_target === timer.deliver_pane &&
+    quietMessagingOn(timer.project_id) &&
+    quietMessagingHooksLaunched(timer.project_id, timer.deliver_command)
+  );
+}
+
+function socketStillRegistered(timer: TimerRow, owner: DeliveryOwner): boolean {
+  requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} socket delivery`);
+  const row = stmt(
+    `SELECT claude_messaging_socket AS socket, claude_messaging_pane_pid AS pid, pane_pid FROM agents
+      WHERE id = ? AND status = 'running' AND kind = 'lead'`,
+  ).get(owner.rowId) as { socket: string; pid: string; pane_pid: string } | undefined;
+  const wake =
+    !isRepeatingWake(timer)
+      ? stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL").get(timer.id)
+      : stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fire_count = ?").get(timer.id, timer.fire_count);
+  return (
+    wake !== undefined &&
+    row !== undefined &&
+    row.socket === timer.deliver_messaging_socket &&
+    row.pid === timer.deliver_messaging_pane_pid &&
+    row.pid === row.pane_pid
+  );
+}
+
+// A failed stamp means the firing was cancelled or superseded, so nothing is posted.
+function stampRepeatingAttempt(timer: TimerRow, note: string, typedSeen: string, firstHeldAt: string | null): boolean {
+  try {
+    return (
+      stmt(
+        `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
+           delivery_method = ?, delivered_by = ?, first_held_at = ?, typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+         WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL AND typed_at IS NULL AND socket_attempt_at IS NULL`,
+      ).run(note, DELIVERY_METHOD.socketRepeating, deliveredByForFiring(timer), firstHeldAt, typedSeen, timer.id, timer.fire_count).changes === 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+// At most one fallback per (id, firing): the method leaves socket-repeating here and never returns to it.
+function claimRepeatingFallback(timer: TimerRow): boolean {
+  try {
+    return (
+      stmt(
+        `UPDATE wakes SET delivery_method = ?, delivered_by = ?
+          WHERE id = ? AND fire_count = ? AND ${repeatingSocketAwaitingWhere()}
+            AND NOT EXISTS (${repeatingEvidenceSql("1")})`,
+      ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, deliveredByForFiring(timer), timer.id, timer.fire_count).changes === 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+class FiringSuperseded extends Error {}
+
+// Nothing reached the pane, so this firing is settled as dropped: the next one delivers, nothing replays it.
+// The marker lives in socket_delivery_note because hive lead's re-point clears held_reason.
+function dropRepeatingFiring(timer: TimerRow, firing: number, err: unknown): void {
+  const why = err instanceof Error ? err.message : String(err);
+  bestEffortRun(
+    `UPDATE wakes SET socket_delivery_note = ?, held_reason = ?
+      WHERE id = ? AND fire_count = ? AND delivery_method = ? AND typed_at IS NULL`,
+    FIRING_DROPPED_NOTE,
+    `${HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM}${why} Firing #${firing} was not delivered; the next firing goes out on schedule.`,
+    timer.id,
+    firing,
+    DELIVERY_METHOD.ptyAfterSocketTimeout,
+  );
+}
+
+function requireCurrentFiring(id: number, firing: number): void {
+  const row = stmt("SELECT 1 AS hit FROM wakes WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL").get(id, firing);
+  if (row === undefined) throw new FiringSuperseded(`wake #${id} firing #${firing} was superseded`);
 }
 
 async function deliver(
@@ -2646,10 +3044,61 @@ async function deliver(
 
   firstHeldAt: string | null,
   owner: DeliveryOwner | null,
+  fallback = false,
 ): Promise<void> {
   const tail = watchedTail(timer);
-  const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
   const body = (isLeadActorId(timer.deliver_actor) ? shortRenderForLeadDelivery(timer) : null) ?? timer.body;
+  const staleness = noticeStalenessNote(timer);
+
+  // A repeating wake that took the socket keeps its firing number in every marker and every write.
+  let firing = fallback && timer.delivery_method === DELIVERY_METHOD.socketRepeating ? timer.fire_count : null;
+
+  if (!fallback && socketRoute(timer, owner)) {
+    const repeating = isRepeatingWake(timer);
+    const head = repeating ? firingMarker(timer) : `[hive wake #${timer.id}`;
+    const text = `${head}${note ? `, ${note}` : ""}] ${body + staleness + tail}\n\n${SOCKET_WAKE_FOOTER}`;
+    if (!text.includes(CROSS_SESSION_CLOSE)) {
+      if (repeating) {
+        if (!stampRepeatingAttempt(timer, note, typedSeen, firstHeldAt)) return;
+        firing = timer.fire_count;
+      } else {
+        bestEffortRun(
+          `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
+             delivery_method = ?, delivered_by = ?, first_held_at = ?, typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+           WHERE id = ?`,
+          note,
+          DELIVERY_METHOD.socket,
+          deliveredByForFiring(timer),
+          firstHeldAt,
+          typedSeen,
+          timer.id,
+        );
+      }
+      const posted = await postClaudeWake({
+        socketPath: timer.deliver_messaging_socket,
+        senderAddress: socketSenderAddress(dataDir),
+        text,
+      beforeWrite: () => !usageLimitHeld(timer) && socketStillRegistered(timer, owner!),
+      });
+      if (posted) {
+        forgetPaneAnswers(timer.deliver_pane, choices);
+        return;
+      }
+    if (usageLimitHeld(timer)) {
+      const until = timer.deliver_row_id === null ? null : usageLimitGate(timer.deliver_row_id, Date.now()).until;
+      if (until) unclaimUsageLimit(timer, until);
+      return;
+    }
+      if (firing !== null && !claimRepeatingFallback(timer)) return;
+      note = withReDelivered(note);
+      fallback = true;
+    }
+  }
+
+  const named = firing === null ? `wake #${timer.id}` : `wake #${timer.id} firing #${firing}`;
+  const prefix =
+    `[hive ${named}${note ? `, ${note}` : ""}] ` + (fallback ? `If you already handled ${named}, ignore this.\n` : "");
+  const method = fallback ? DELIVERY_METHOD.ptyAfterSocketTimeout : DELIVERY_METHOD.pty;
 
   let typedBusy: number | null;
   try {
@@ -2662,12 +3111,17 @@ async function deliver(
   const recordTyped = () =>
     bestEffortRun(
       `UPDATE wakes SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
-         typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
-       WHERE id = ?`,
+         typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, delivery_method = ?, delivered_by = ?,
+         confirmed_at = CASE WHEN socket_attempt_at IS NULL THEN NULL ELSE confirmed_at END
+       WHERE id = ? AND (? IS NULL OR fire_count = ?)`,
       typedBusy,
       typedSeen,
       firstHeldAt,
+      method,
+      deliveredByForFiring(timer),
       timer.id,
+      firing,
+      firing,
     );
 
   const box = cacheEntry(timer.deliver_pane, choices).box;
@@ -2676,18 +3130,54 @@ async function deliver(
   try {
     await sendText(
       timer.deliver_pane,
-      prefix + body + noticeStalenessNote(timer) + tail,
+      prefix + body + staleness + tail,
       true,
       () => {
         pasted = true;
         if (strandedTextWouldHold) recordTyped();
       },
       undefined,
-      owner ? () => requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`) : undefined,
+      owner || firing !== null
+        ? () => {
+            if (owner) requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`);
+            if (firing !== null) requireCurrentFiring(timer.id, firing);
+            if (timer.deliver_row_id !== null) {
+              observeUsageLimit(timer.deliver_row_id, Date.now());
+              const gate = usageLimitGate(timer.deliver_row_id, Date.now());
+              if (gate.held && gate.until) throw new UsageLimitRace(gate.until);
+            }
+          }
+        : undefined,
     );
   } catch (err) {
-    if (!(err instanceof PaneOwnershipLost)) throw err;
-    recordLostAfterClaim(timer, pasted, err.message);
+    if (err instanceof UsageLimitRace) {
+      if (!pasted) unclaimUsageLimit(timer, err.until);
+      else recordLostAfterClaim(timer, true, `${err.message} The body was pasted, and no Enter was sent.`, firing);
+      forgetPaneAnswers(timer.deliver_pane, choices);
+      return;
+    }
+    if (fallback && !pasted && firing === null) {
+      bestEffortRun("UPDATE wakes SET delivery_method = ?, delivered_by = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, deliveredByForFiring(timer), timer.id);
+    }
+    if (err instanceof FiringSuperseded) return;
+    if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
+    if (err instanceof PaneOwnershipLost) {
+      if (firing === null || pasted) {
+        recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+      }
+      return;
+    }
+    if (pasted) {
+      const repairableNotice = stmt(
+        `SELECT 1 FROM wake_idle_notices n JOIN wakes w ON w.id = n.notice_wake_id
+          WHERE n.notice_wake_id = ? AND w.fired_at IS NOT NULL
+            AND COALESCE(w.typed_at, w.socket_attempt_at) IS NULL AND w.cancelled_at IS NULL
+          LIMIT 1`,
+      ).get(timer.id);
+      if (pasted && repairableNotice === undefined) {
+        recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+      }
+    }
     return;
   } finally {
 
@@ -2695,6 +3185,43 @@ async function deliver(
   }
 
   if (!strandedTextWouldHold) recordTyped();
+}
+
+// Measured from the lead's first turn end after the post, because a busy lead reads the post only then.
+function socketFallbackDue(timer: TimerRow): boolean {
+  return socketGraceDue(timer.deliver_actor, timer.socket_attempt_at, timer.deliver_pane_pid, () =>
+    timer.deliver_row_id === null ? null : readLeadTurnState(timer.deliver_row_id),
+  );
+}
+
+async function fallbackClaimed(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): Promise<boolean> {
+  const decision = deliverable(timer, snapshot, choices);
+  if (!decision.ok) return false;
+  const claimed =
+    timer.delivery_method === DELIVERY_METHOD.socketRepeating
+      ? claimRepeatingFallback(timer)
+      : stmt(
+          `UPDATE wakes SET delivery_method = ?, delivered_by = ?
+            WHERE id = ? AND ${socketAwaitingWhere()}
+              AND NOT EXISTS (${promptEvidenceSql("wakes.socket_attempt_at").replace("MIN(created_at)", "1")})`,
+        ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, deliveredByForFiring(timer), timer.id).changes === 1;
+  if (!claimed) return false;
+  await deliver(timer, withReDelivered(timer.socket_delivery_note), choices, decision.typedSeen, decision.firstHeldAt, decision.owner, true);
+  return true;
+}
+
+async function retryUnconfirmedSocketWakes(snapshot: AliveSnapshot | null, choices: ChoiceCache): Promise<void> {
+  const awaiting = stmt(
+    `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
+       FROM wakes ${DELIVER_SOCKET_JOIN}
+      WHERE ((${socketAwaitingWhere("wakes.")}) OR (${repeatingSocketAwaitingWhere("wakes.")}))
+        AND wakes.socket_attempt_at >= datetime('now', ?)`,
+  ).all(LOG_RETENTION) as TimerRow[];
+  for (const timer of awaiting) {
+    if (usageLimitHeld(timer)) continue;
+    if (!socketFallbackDue(timer)) continue;
+    await withPaneClaim(timer, () => fallbackClaimed(timer, snapshot, choices));
+  }
 }
 
 export const DEFAULT_SCHEDULER_INTERVAL_MS = 3000;

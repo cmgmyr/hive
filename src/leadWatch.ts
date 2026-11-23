@@ -1,7 +1,7 @@
 import { db } from "./db.js";
 import { paneClassifierFor } from "./harnesses.js";
 import { readLeadTurnState } from "./leadState.js";
-import { LEAD_KIND } from "./spawn.js";
+import { LEAD_KIND } from "./agentKinds.js";
 import { foreignSocket, holdsHumanInput, observationFailed, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
 export const LEAD_TARGET_GONE = "LEAD_TARGET_GONE";

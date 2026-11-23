@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { DIST, REPO, isolateTmux, liveAgentRow, makeFakeClaude, McpClient, repaintPaneAsSameWorker, runFixture, scratchDirs, until } from "./helpers.mjs";
+import { DIST, REPO, isolateTmux, liveAgentRow, makeFakeClaude, McpClient, repaintPaneAsSameWorker, runFixture, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the unsubmitted-input notification tests");
 
@@ -146,7 +146,8 @@ describe(
 
         await until(async () => timerRow(wakeId).held_at != null, 15000);
         assert.match(timerRow(wakeId).held_reason, /unsubmitted/, "held for the input-box reason, not lost silently");
-        await until(async () => noticesAbout(wakeId).length > 0, 6 * TICK_MS);
+        const noticeFiled = await untilOrTimeout(async () => noticesAbout(wakeId).length > 0, 6 * TICK_MS);
+        assert.equal(noticeFiled, false, "there must be no notification when the owner is the blocked pane");
         assert.equal(noticesAbout(wakeId).length, 0, "nobody to tell: the owner IS the blocked pane");
         assert.equal(timerRow(wakeId).fired_at, null, "and it must not have fired either");
       },

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { REPO, isolateTmux, until } from "./helpers.mjs";
+import { REPO, isolateTmux, tmux, until } from "./helpers.mjs";
 
 // Real captures off a live codex-cli 0.146.0 pane, private tmux socket, torn down after (todo 523).
 // Replayed into a real tmux pane (cat file; sleep) so the exported, target-based functions under
@@ -87,11 +87,9 @@ describe(
         const fixture = join(FIXTURES, file);
         const cmd = `cat '${fixture}'; sleep 600`;
         if (i === 0) {
-          execFileSync("tmux", ["new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", "50", cmd], {
-            stdio: "ignore",
-          });
+          tmux("new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", "50", cmd);
         } else {
-          execFileSync("tmux", ["new-window", "-d", "-t", `=${session}`, "-n", name, cmd], { stdio: "ignore" });
+          tmux("new-window", "-d", "-t", `=${session}`, "-n", name, cmd);
         }
       });
     });
@@ -161,11 +159,9 @@ describe(
         const fixture = join(FIXTURES, file);
         const cmd = `cat '${fixture}'; sleep 600`;
         if (i === 0) {
-          execFileSync("tmux", ["new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", "50", cmd], {
-            stdio: "ignore",
-          });
+          tmux("new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", "50", cmd);
         } else {
-          execFileSync("tmux", ["new-window", "-d", "-t", `=${session}`, "-n", name, cmd], { stdio: "ignore" });
+          tmux("new-window", "-d", "-t", `=${session}`, "-n", name, cmd);
         }
       });
     });

@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { platform } from "node:os";
+import { parseEtimeSeconds } from "./etime.js";
+export { parseEtimeSeconds } from "./etime.js";
 
 export interface PtyHeadroom {
 
@@ -134,14 +136,6 @@ export interface PsRowWithAge extends PsRow {
 }
 
 const PS_AGE_LINE = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+?)\s*$/;
-
-export function parseEtimeSeconds(etime: string): number | null {
-  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime) ?? /^(\d+)$/.exec(etime);
-  if (!m) return null;
-  if (m.length === 2) return Number(m[1]);
-  const [, days, hours, minutes, seconds] = m;
-  return (Number(days ?? 0) * 24 + Number(hours ?? 0)) * 3600 + Number(minutes) * 60 + Number(seconds);
-}
 
 export function parsePsSnapshotWithAge(output: string): PsRowWithAge[] {
   const rows: PsRowWithAge[] = [];

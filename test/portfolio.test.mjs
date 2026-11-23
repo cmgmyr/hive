@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, REPO, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux, hasTmux } = isolateTmux("the portfolio tests");
 clearHiveEnv();
@@ -12,10 +12,10 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 migrate();
 const { addProject } = await import("../dist/context.js");
 const { collectPortfolio, leadText, ACTIVE_WAKE_WHERE } = await import("../dist/portfolio.js");
-const { ACTIVE_TIMER_WHERE } = await import("../dist/scheduler.js");
 
 after(() => {
   for (const name of sessions) {
@@ -47,6 +47,13 @@ function todo(p, { title = "t", status = "open", priority = "medium", tags = [],
        VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(p.id, title, status, priority, JSON.stringify(tags), updated, archived ? OLD : null).id;
+}
+
+function question(p, { state = "pending", question: text, answer = null, options = null, defaultAnswer = "private default" } = {}) {
+  db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer, state, answer, notes, updated_by)
+     VALUES (?, 'agent:test', ?, ?, 'private header', ?, ?, ?, ?, 'private notes', 'agent:test')`,
+  ).run(p.id, options === null ? "free_text" : "choice", text, options, defaultAnswer, state, answer);
 }
 
 const block = (todoId, blockerId) =>
@@ -111,14 +118,78 @@ describe("portfolio: empty store", () => {
   });
 });
 
+describe("portfolio pending questions", () => {
+  it("a pending question adds the questions_pending reason", () => {
+    const p = project("pending-question-reason");
+    question(p, { question: "PRIVATE QUESTION" });
+    const r = row(p);
+    assert.equal(r.questions_pending, 1);
+    assert.deepEqual(r.reasons, ["questions_pending"]);
+  });
+
+  it("a defaulted question does not make a project waiting on you", () => {
+    const p = project("defaulted-question-lane");
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    const r = row(p);
+    assert.equal(r.lane, "quiet");
+    assert.deepEqual(r.reasons, ["quiet"]);
+  });
+
+  it("only defaulted questions do not raise the portfolio count", () => {
+    const p = project("defaulted-question-count");
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    assert.equal(row(p).questions_pending, 0);
+    db.prepare("DELETE FROM questions WHERE project_id = ?").run(p.id);
+  });
+
+  it("portfolio reports scoped pending counts without question content", async () => {
+    const p = project("question-counts");
+    const away = project("other-question-counts");
+    question(p, { question: "PRIVATE QUESTION ONE" });
+    question(p, {
+      question: "PRIVATE QUESTION TWO",
+      options: JSON.stringify([
+        { label: "PRIVATE OPTION", description: "PRIVATE DESCRIPTION", recommended: true },
+        { label: "Other", description: "Other", recommended: false },
+      ]),
+      defaultAnswer: "PRIVATE OPTION",
+    });
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    question(p, { state: "answered", question: "PRIVATE ANSWERED", answer: "PRIVATE ANSWER" });
+    question(p, { state: "withdrawn", question: "PRIVATE WITHDRAWN" });
+    question(away, { question: "PRIVATE FOREIGN" });
+
+    const report = collectPortfolio(NOW);
+    const own = report.projects.find((entry) => entry.id === p.id);
+    assert.equal(own.questions_pending, 2);
+    assert.equal(report.projects.find((entry) => entry.id === away.id).questions_pending, 1);
+    const secrets = [
+      "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "private header", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
+      "private default", "private notes", "PRIVATE DEFAULTED", "PRIVATE ANSWERED", "PRIVATE ANSWER",
+      "PRIVATE WITHDRAWN", "PRIVATE FOREIGN",
+    ];
+    const reportJson = JSON.stringify(report);
+    for (const secret of secrets) {
+      assert.equal(reportJson.includes(secret), false, `${secret} must not appear in portfolio JSON`);
+    }
+
+    const cli = await runCli(["portfolio"], { cwd: p.path, dataDir: dirs.dataDir, tmp: dirs.tmp });
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /needs human 0; questions 2 pending; wakes 0 pending, 0 overdue/);
+    for (const secret of secrets) assert.equal(cli.stdout.includes(secret), false, `${secret} must not appear in portfolio text`);
+    db.prepare("DELETE FROM questions WHERE project_id IN (?, ?)").run(p.id, away.id);
+  });
+});
+
 describe("portfolio lanes", () => {
   it("puts an empty project in quiet with the quiet reason and last activity from its creation", () => {
     const p = project();
     const r = row(p);
     assert.equal(r.lane, "quiet");
+    assert.equal(r.questions_pending, 0);
     assert.deepEqual(r.reasons, ["quiet"]);
     assert.equal(r.last_activity_at, OLD);
-    assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown" });
+    assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown", ended_at: null });
   });
 
   it("puts a needs-human todo in waiting_on_you", () => {
@@ -127,6 +198,23 @@ describe("portfolio lanes", () => {
     const r = row(p);
     assert.equal(r.lane, "waiting_on_you");
     assert.deepEqual(r.reasons, ["needs_human"]);
+  });
+
+  it("a project whose only wait is a pending question is waiting on you", () => {
+    const p = project("pending-question-waiting");
+    question(p, { question: "PRIVATE QUESTION" });
+    const r = row(p);
+    assert.equal(r.lane, "waiting_on_you");
+    assert.deepEqual(r.reasons, ["questions_pending"]);
+  });
+
+  it("a pending question does not pull a stuck project out of stuck", () => {
+    const p = project("pending-question-stuck");
+    question(p, { question: "PRIVATE QUESTION" });
+    wake(p, { due: at("-10 minutes") });
+    const r = row(p);
+    assert.equal(r.lane, "stuck");
+    assert.deepEqual(r.reasons, ["questions_pending", "wake_overdue_5m"]);
   });
 
   it("puts an in_progress todo in moving", () => {
@@ -297,8 +385,19 @@ describe("portfolio idle-watch wakes", () => {
     assert.equal(row(upcoming).lane, "quiet");
   });
 
-  it("keeps the local active-wake clause identical to the scheduler's", () => {
-    assert.equal(ACTIVE_WAKE_WHERE, ACTIVE_TIMER_WHERE);
+  it("active-wake readers import the one leaf predicate", () => {
+    const files = ["scheduler", "crew", "cli", "kickoff", "tools/wakes", "portfolio", "dashboard"];
+    const sources = Object.fromEntries(files.map((file) => [file, readFileSync(`${REPO}/src/${file}.ts`, "utf8")]));
+    const clause = "cancelled_at IS NULL AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL OR COALESCE(clock_repeat = 'daily', 0)))";
+    assert.match(readFileSync(`${REPO}/src/wakeSql.ts`, "utf8"), /export const ACTIVE_TIMER_WHERE = activeWakeWhere\(\)/u);
+    assert.equal(Object.values(sources).filter((source) => source.includes(clause)).length, 0);
+    for (const file of files) {
+      const importPattern = file === "kickoff"
+        ? /import\(["']\.\/wakeSql\.js["']\)/
+        : /from ["'](?:\.\.\/|\.\/)?wakeSql\.js["']/;
+      assert.match(sources[file], importPattern);
+    }
+    assert.equal(ACTIVE_WAKE_WHERE, clause);
   });
 });
 
@@ -414,7 +513,7 @@ describe("portfolio panes", () => {
     const id = agent(p, { kind: "lead", state: "idle", target: "%dead" });
     todo(p);
     const r = row(p);
-    assert.deepEqual(r.lead, { state: "dead_pane", agent_id: id, turn: "unknown" });
+    assert.deepEqual(r.lead, { state: "dead_pane", agent_id: id, turn: "unknown", ended_at: null });
     assert.equal(r.lane, "quiet");
   });
 
@@ -431,12 +530,29 @@ describe("portfolio panes", () => {
     assert.equal(row(withWake).lane, "stuck");
   });
 
+  it("reads a live lead as unknown, never dead_pane, when tmux cannot be connected to", { skip }, () => {
+    const p = project();
+    const id = agent(p, { kind: "lead", state: "idle", target: livePane() });
+    todo(p, { status: "in_progress", updated: at("-1 hour") });
+    assert.equal(row(p).lead.state, "alive");
+
+    const dir = fakeFailingTmux({ failOn: "list-panes", stderr: "error connecting to /tmp/tmux-501/default (Operation not permitted)" });
+    const saved = process.env.PATH;
+    process.env.PATH = `${dir}:${saved}`;
+    try {
+      assert.deepEqual(row(p).lead, { state: "unknown", agent_id: id, turn: "unknown", ended_at: null });
+      assert.ok(!row(p).reasons.includes("dead_lead_pane"));
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
+
   it("reads a lead whose pane id was reissued to a different pid as dead_pane, and a matching pid as alive", { skip }, () => {
     const reissued = project();
     const id = agent(reissued, { kind: "lead", state: "idle", target: livePane() });
     db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(id);
     todo(reissued, { status: "in_progress", updated: at("-1 hour") });
-    assert.deepEqual(row(reissued).lead, { state: "dead_pane", agent_id: id, turn: "unknown" });
+    assert.deepEqual(row(reissued).lead, { state: "dead_pane", agent_id: id, turn: "unknown", ended_at: null });
     assert.deepEqual(row(reissued).reasons, ["dead_lead_pane", "todo_in_progress"]);
 
     const same = project();
@@ -445,6 +561,38 @@ describe("portfolio panes", () => {
     const livePid = tmux("display-message", "-p", "-t", pid, "#{pane_pid}");
     db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(livePid, sameId);
     assert.equal(row(same).lead.state, "alive");
+  });
+
+  it("portfolio reports dormant with ended_at only for a clean session end", { skip }, () => {
+    const p = project();
+    const id = agent(p, { kind: "lead", target: "%dormant", pid: "stored-pane" });
+    const endedAt = "2026-10-08 12:34:56";
+    const panePid = db.prepare("SELECT pane_pid FROM agents WHERE id = ?").get(id).pane_pid;
+    db.prepare(
+      `INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at)
+       VALUES (?, ?, 'session-one', 'unknown', 0, 'session_end', ?)`,
+    ).run(id, panePid, endedAt);
+    assert.deepEqual(row(p).lead, { state: "dormant", agent_id: id, turn: "unknown", ended_at: endedAt });
+    assert.equal(row(p).lane, "quiet");
+    assert.ok(!row(p).reasons.includes("dead_lead_pane"));
+
+    const noEnd = project();
+    const noEndId = agent(noEnd, { kind: "lead", target: "%dead-no-end" });
+    assert.equal(row(noEnd).lead.ended_at, null);
+    assert.equal(row(noEnd).lead.agent_id, noEndId);
+  });
+
+  it("a dormant lead with in-progress todos still raises dead_lead_pane", { skip }, () => {
+    const p = project();
+    const id = agent(p, { kind: "lead", target: "%dormant-stuck", pid: "stored-pane" });
+    const panePid = db.prepare("SELECT pane_pid FROM agents WHERE id = ?").get(id).pane_pid;
+    db.prepare(
+      `INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at)
+       VALUES (?, ?, 'session-one', 'unknown', 0, 'session_end', '2026-10-08 12:34:56')`,
+    ).run(id, panePid);
+    todo(p, { status: "in_progress", updated: at("-1 hour") });
+    assert.equal(row(p).lead.state, "dormant");
+    assert.ok(row(p).reasons.includes("dead_lead_pane"));
   });
 
   it("counts a worker whose pane id was reissued to a different pid as unreachable, not working", { skip }, () => {
@@ -471,7 +619,7 @@ describe("portfolio panes", () => {
     db.prepare(
       "INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at) VALUES (?, '', 's', 'working', 1, 'stop', ?)",
     ).run(id, OLD);
-    assert.deepEqual(row(p).lead, { state: "unknown", agent_id: id, turn: "unknown" });
+    assert.deepEqual(row(p).lead, { state: "unknown", agent_id: id, turn: "unknown", ended_at: null });
   });
 
   it("reads a foreign-socket lead as unknown, never dead", { skip }, () => {
@@ -498,6 +646,18 @@ describe("portfolio panes", () => {
     assert.deepEqual(r.reasons, ["worker_needs_input", "worker_working"]);
   });
 
+  it("portfolio keeps resumed idle separate from finished idle", { skip }, () => {
+    const p = project();
+    agent(p, { state: "working", target: livePane() });
+    agent(p, { state: "waiting", target: livePane() });
+    agent(p, { state: "idle", target: livePane() });
+    const resumedIdle = agent(p, { state: "idle", target: livePane() });
+    db.prepare("UPDATE agents SET resumed_at = ? WHERE id = ?").run("2026-09-29 11:00:00", resumedIdle);
+    agent(p, { state: "unknown", target: livePane() });
+
+    assert.deepEqual(row(p).workers, { working: 1, idle: 1, needs_input: 1, other: 2, unreachable: 0, unconfirmed: 0 });
+  });
+
   it("does not call in_progress work stale while a live worker is working on it", { skip }, () => {
     const p = project();
     db.prepare("UPDATE projects SET created_at = ? WHERE id = ?").run(at("-72 hours"), p.id);
@@ -513,7 +673,7 @@ describe("portfolio panes", () => {
     agent(p, { kind: "command", state: "working", target: livePane() });
     const r = row(p);
     assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 });
-    assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown" });
+    assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown", ended_at: null });
     assert.equal(r.lane, "quiet");
   });
 
@@ -574,7 +734,7 @@ describe("portfolio lead turn", () => {
   });
 
   it("leadText appends the turn only for an alive lead with a known turn", () => {
-    const at = (state, turn) => ({ lead: { state, agent_id: 1, turn } });
+    const at = (state, turn) => ({ lead: { state, agent_id: 1, turn, ended_at: null } });
     assert.equal(leadText(at("alive", "turn_ended")), "alive, turn ended");
     assert.equal(leadText(at("alive", "working")), "alive, turn working");
     assert.equal(leadText(at("alive", "unknown")), "alive");
@@ -620,10 +780,10 @@ describe("hive portfolio CLI", () => {
     assert.ok(report.projects.length > 0);
     const p = report.projects[0];
     assert.deepEqual(Object.keys(p), [
-      "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human",
+      "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human", "questions_pending",
       "needs_human_items", "last_activity_at", "wakes",
     ]);
-    assert.deepEqual(Object.keys(p.lead), ["state", "agent_id", "turn"]);
+    assert.deepEqual(Object.keys(p.lead), ["state", "agent_id", "turn", "ended_at"]);
     assert.deepEqual(Object.keys(p.workers), ["working", "idle", "needs_input", "other", "unreachable", "unconfirmed"]);
     assert.deepEqual(Object.keys(p.todos), ["open", "in_progress", "blocked", "blocked_in_progress", "high"]);
     assert.deepEqual(Object.keys(p.wakes), ["pending", "overdue"]);
@@ -672,6 +832,15 @@ describe("portfolio busy is moving", () => {
     assert.equal(r.needs_human, 1);
     assert.equal(r.needs_human_items.length, 1);
     assert.ok(r.reasons.includes("needs_human"));
+  });
+
+  it("a pending question does not pull a moving project out of moving", { skip }, () => {
+    const p = project();
+    question(p, { question: "PRIVATE QUESTION" });
+    working(p);
+    const r = row(p);
+    assert.equal(r.lane, "moving");
+    assert.deepEqual(r.reasons, ["questions_pending", "worker_working"]);
   });
 
   it("puts needs-human with nothing moving in waiting_on_you", () => {

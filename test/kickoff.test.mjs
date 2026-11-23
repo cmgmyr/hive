@@ -478,6 +478,19 @@ describe("hive kickoff branch gate", () => {
     assert.match(stdout, /silent \(branch "feature\/parser" is not a lead branch \(main, master\)\)/);
   });
 
+  it("currentBranch ignores an ambient GIT_DIR that points at another repository", async () => {
+    const stranger = join(repo.tmp, "stranger");
+    mkdirSync(stranger);
+    git(stranger, "init", "-b", "main");
+    git(stranger, "commit", "--allow-empty", "-m", "root");
+
+    const { stdout } = await runNode(KICKOFF, ["--explain"], {
+      ...repoOpts,
+      env: { GIT_DIR: join(stranger, ".git") },
+    });
+    assert.match(stdout, /silent \(branch "feature\/parser" is not a lead branch \(main, master\)\)/);
+  });
+
   it("fires once the branch is a default lead branch", async () => {
     git(repo.projectDir, "checkout", "-b", "main");
     const { stdout } = await runNode(KICKOFF, [], repoOpts);

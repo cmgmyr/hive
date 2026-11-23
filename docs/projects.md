@@ -33,13 +33,21 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
 lead_branches: [main, master] # branches where a session gets hive's kickoff
 first_message: "..."         # a lead's first turn; absent or "" sends none
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
-lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
+completion_gate: [node, .hive/check-completion.mjs] # optional todo completion command
+lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults true
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
                               # HTML dashboard to .hive/dashboard.html on every tick (see [the dashboard guide](dashboard.md)):
                               # the board pad, open todos, running agents, pending wakes, and
                               # recent activity. Read-only, self-contained, opens from file://.
                               # `hive`/`hive lead` opens it in a browser once per ~8h of use
                               # (`hive lead --no-dashboard` skips this run's open).
+lead_sidebar: true            # default true. A claude lead gets a crew pane (workers,
+                              # todos, wakes) from `hive crew --json`. Restart the lead after
+                              # changing it (see [the crew sidebar](crew.md)).
+quiet_messaging: true         # default true. Wakes and workers' messages reach a claude lead
+                              # as one "Message from @hive" row instead of typed text. Set
+                              # false to keep them typed. Restart the lead after changing it
+                              # (see [Quiet messaging](#quiet-messaging)).
 vars:                         # substituted into the profile runbook
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
@@ -84,7 +92,21 @@ One case does not tile. If a `visible: false` process is the thing that opens th
 
 `hive status` labels each running process `shown` or `hidden`, `hive doctor` reports one line counting them, and the dashboard gets a Processes card and section listing every process the project defines - running or not - with its state, where it is showing, and when it started.
 
-`agents:` needs no such approval, and that's deliberate rather than an oversight: unlike `processes:`, which carries an arbitrary string hive executes, each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
+### Allowed harnesses (`agents:`)
+
+Unlike `processes:`, which carries an arbitrary string hive executes, `agents:` needs no approval, and that is deliberate. Each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
+
+### Todo completion gate
+
+Set `completion_gate` in the project `hive.yml` to a non-empty argv list. Hive runs that executable with literal arguments from the project root before an unfinished todo becomes completed through `todo_complete` or `todo_update(status="completed")`. Exit 0 lets the write continue. A nonzero exit, signal, timeout, spawn failure, untrusted command, invalid field, or stale todo/config refuses the entire write. The error includes the reason, exit status or signal when available, and up to 4096 bytes from each output stream. The command has a 30-second timeout and receives `HIVE_TODO_ID`, `HIVE_TODO_TITLE`, `HIVE_PROJECT_ID`, and `HIVE_ACTOR_ID` in its environment.
+
+The gate may run more than once when completion requests overlap, so it must be side-effect-free or idempotent.
+
+`hive lead` reviews the gate with the same interactive approval it uses for other project commands. Approval records trust for the current argv and does not run the gate. If approval is absent or the argv changes, completion refuses and tells you to run `hive` in a terminal in the project. There is no separate trust command. With the key absent or set to `null`, completions keep their existing behavior. A malformed `completion_gate` field in valid YAML refuses completion; a malformed whole project `hive.yml` follows the existing no-config behavior, so the gate does not run. The key is project-only and a global occurrence warns and is ignored.
+
+### Recovering a worker after pane loss
+
+When hive confirms that a running worker's recorded pane is gone or belongs to another process, it closes that worker's row, releases its leases and marks the crash for recovery. A process-stopping `agent_close` or `agent_park` also releases the worker's leases and is excluded from crash recovery. `agent_close({row_only: true})` retires the row without stopping the pane, so it leaves leases in place. Run `hive crew-restore [--dry-run] [--json]` to resume pending crash recoveries on their existing rows; `agent_resume(agent_id: <id>)` remains available for one closed worker. Both preserve the worker's session, working directory and launch options when those resources remain available. Per-row output covers pending recovery rows and every running, non-parked row, with pane ownership live, gone, unknown or reissued, plus each outcome and reason. Historical, deliberately closed and parked rows stay out of that list; JSON adds a numeric `not_considered` count, and the human totals line shows the same count. Crew restore never replays the previous assignment. Hive keeps a crashed Codex worker's home for seven days from the detected loss, then reaps it; a deliberate close releases the home immediately. Historical closed rows are not inferred to be crashes. Restart all hive servers after upgrading before relying on this retention, since an older server still reaps every closed, non-parked home.
 
 ### Process lifetime
 
@@ -124,10 +146,49 @@ A fresh `hive lead` reports what it found:
 
 Re-running `hive lead` while the lead is alive adopts that pane and stops nothing, because those processes belong to the lead that is still running.
 
-A process that dies on its own tells the lead so, once, naming the command that restarts it. A process you stopped says nothing. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
+A process that dies on its own tells the lead so, once, as `[hive] process "<name>" exited on its own; its pane is gone. Restart it with: hive start "<name>"`. A process you stopped says nothing, and neither does a death when the lead has no live pane hive can classify, since nothing could deliver the notice. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
 
 A stop that cannot finish says so rather than pretending. If the process survives both C-c and the kill, you get `<name>: still running: its pane survived C-c and kill-pane, so hive left the row open` and the process stays visible to `hive status` and to the next `hive stop`.
 
+### Quiet messaging
+
+By default, wakes to Claude Code leads use the lead's cross-session message socket. Claude Code draws each wake as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. Workers, Codex leads, and Claude leads started without the generated quiet-messaging hooks file receive typed wakes.
+
+**Turn it off.** Set the key to `false` in your global `~/.hive/hive.yml` to use typed delivery everywhere, or in one project's `hive.yml` to disable it for that project:
+
+```yaml
+quiet_messaging: false
+```
+
+A project's value wins over the global one, so `quiet_messaging: false` in a project's `hive.yml` keeps that project on typed delivery while the global default is on elsewhere. A YAML `null` resets the value to the built-in default, `true`. If you set `HIVE_DATA_DIR`, the global file is `$HIVE_DATA_DIR/hive.yml`.
+
+**Restart the lead after upgrading.** The setting takes effect when `hive lead` starts a new Claude Code session. That launch passes a generated settings file, `~/.hive/lead-<project id>-hooks.json`, which sets `crossSessionInbound: "accept"` and adds a `SessionStart` hook that records the session's socket. A lead that was already running keeps the settings it started with, so hive keeps typing its wakes and worker messages until you restart it. Close the lead session (`/exit`), then run `hive lead` again.
+
+Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mode holds each incoming message behind an approval dialog. Restarting is what avoids that.
+
+**Check that it works.** The next wake to the lead, a worker's finish notice for example, appears as one `Message from @hive` row instead of a pasted block. Then read the wake back with `wake_get(<wake id>)` or `wake_list`:
+
+- `delivery_method: "socket"` means hive posted it to the socket. A repeating wake shows `"socket-repeating"` for its current firing.
+- `confirmation: "confirmed"` means the lead's prompt hook saw it, so the lead read it.
+- `delivery_method: "pty"` means hive typed it. That is expected for a wake to a worker, a Codex lead, a lead started without the generated quiet-messaging hooks, and a body containing `</cross-session-message>`.
+
+**If a message does not arrive.** A socket write succeeding does not prove the lead read the message, so hive waits for the prompt hook. When the lead was busy, the clock starts at the end of the lead's first turn after the post, because a busy session reads the message only then. If there is still no confirmation 60 seconds after that turn end, or 60 seconds after the post when no turn was running, hive types the same wake into the pane once. It starts `[hive wake #N, re-delivered] If you already handled wake #N, ignore this.` and `wake_get` shows `delivery_method: "pty-after-socket-timeout"`. A socket that refuses the connection, or a write that does not finish within one second, gets the same re-delivery straight away. A timed-out write may still have reached the lead, so that case can duplicate. The worst case is that the lead sees one wake twice, and the second copy says so.
+
+**Repeating wakes.** Each firing of a repeating wake goes to the socket on its own and is marked with its firing number: `[hive wake #N firing #F] ...`. `wake_get` and `wake_list` describe the current firing only, so `fire_count` is F and `delivery_method`, `socket_attempt_at` and `confirmation` belong to that firing. Only the prompt for that exact firing confirms it, so a late reply to an earlier firing never confirms a newer one. While a firing is unconfirmed and not yet re-delivered, the next firing waits, even past its interval. Once the current firing is confirmed or typed, one overdue firing goes out and the next is scheduled from then; missed intervals are not caught up. A re-delivered firing starts `[hive wake #N firing #F, re-delivered] If you already handled wake #N firing #F, ignore this.`, and each firing is re-delivered at most once. If the lead restarts before a re-delivery reaches the pane, that firing is dropped: `held_reason` says which firing was not delivered, and the next firing goes out on schedule. If a re-delivery was pasted but the hive server stopped before it finished, `wake_get` keeps showing `delivery_method: "pty-after-socket-timeout"` with no `typed_at`, and the wake waits until that firing is confirmed or a week passes. If it does not recover, cancel the wake and set a new one.
+
+**Worker messages.** The same setting moves a worker's `agent_send` to its Claude lead onto the socket. The row reads `Message from @hive: [hive:worker api] [message #7, 42 chars] ...`. Every such message is now stored and gets an id, including a short one, so `agent_message_get(7)` returns its text and its delivery state: `delivery_status` is `socket-pending` until the lead's prompt confirms it, then `complete`. A message over 300 characters still arrives as the one-line pointer, never as the full report. The worker's receipt says `pending: true` and "do not resend". When no confirmation comes, hive types the message into the pane once, on the same clock as a wake, marked `[message #7, 42 chars, re-delivered] If you already handled message #7, ignore this.` A refused or timed-out socket, or a lead with no registered socket, gets that typed copy straight away. The typed copy waits for copy mode, a dialog or your half-typed input to clear, exactly like a wake, and is pasted at most once: `delivery_status: "failed"` means hive will not paste it again, and its `delivery_note` says why: either the lead pane the message was accepted for is gone or was replaced, and nothing was typed, or a paste was attempted and did not finish. Messages from one worker are typed in id order, but a socket message and a later typed one can arrive out of order, so read the ids. Messages are kept for 7 days, like every stored message. Messages from the lead to a worker stay typed.
+
+**Restart older hive sessions.** Every session with hive loaded runs its own scheduler, and a session still running a hive version without per-firing socket delivery keeps its old behaviour. It types repeating wakes into the pane, does not wait for an unsettled firing, and its claim of the next firing makes the newer servers drop the earlier firing's pending re-delivery. It can also mark a repeating firing confirmed when that wake's own body quotes `[hive wake #N]`. After upgrading, restart every session with hive loaded, or reconnect hive with `/mcp`.
+
+Set `quiet_messaging: false` in the global or project file, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
+
+With it on (the default), that lead accepts cross-session messages from every sender, not only from hive. Workers are unaffected: their generated settings keep refusing inbound messages.
+
+## Harness usage limits
+
+Hive observes limits from the worker's or lead's locally owned transcript or Codex rollout and the current pane. While the limit is active, due wakes stay unclaimed and submitted text stays in its existing message row. `agent_send` returns a pending receipt; do not submit it again. `keys` and `submit: false` remain deliberate manual recovery paths. `agent_spawn`, `agent_fork` and `agent_resume` refuse synchronously when a running worker or lead in this project is limited on the same harness, and report the retry time. They do not create a deferred request. A known reset releases after 60 seconds; missing or unparseable reset data is capped at six hours from first observation. Other pane checks such as ownership, dialogs, copy mode and unsubmitted input still apply after release.
+
+For Codex, hive types `continue` once after a known reset only when the worker is assigned and its pane still shows the limit. Hive does not add a setting for this behavior. A new signal from the worker's own session starts a new episode. The detected Codex snapshot fields are inferred from open-source evidence and synthetic fixtures, not confirmed by a live subscription limit.
 
 ## Automatic backups
 
@@ -154,6 +215,6 @@ Undo it with `hive restore <name>`, where the name is the last part of the snaps
 
 ## Pads and todos from the shell
 
-Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --edit` exports it to a temp markdown file and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit, save, then `hive pad <name> --save` writes it back. The export encodes the pad revision, so if a session changed the pad while you edited, the save fails with merge instructions instead of clobbering; your edits stay in the temp file. Temp exports live in the system temp dir and clean themselves up on save (macOS purges strays automatically).
+Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --export` writes a revision-stamped markdown file in the system temp dir and prints its path without opening an editor. `--edit` writes the same export and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit and save with `hive pad <name> --save`; the revision marker guards the save. If a session changed the pad while you edited, the save fails with merge instructions and leaves your edits in the file. For a file without a revision marker, pass `--revision <n>` with the revision you edited. Hive removes its own temp export after a successful save; a file you pass explicitly stays in place, even when it needs no changes. macOS purges abandoned temp files automatically.
 
-Todos are reachable from the shell too: `hive todos` lists the current project's todos, open work by default (`--all` for everything, `--status <s>` for one status, `--tag <t>` for one lane; a todo tagged `needs-human` puts its project in the [portfolio](queen.md#the-portfolio)'s waiting-on-you lane), marking blocked items so you don't pick up something that can't start yet. `hive todo <id>` prints one todo in full, comments included and never truncated, since a worker's handoff is often the only record of what it did. Both commands are read-only and never register a directory: outside a registered project they exit 1 with a stderr line naming `hive init`, as do `hive pads`, `hive pad`, `hive runbook`, `hive posture` and `hive profile read`; creating, completing, and commenting stay MCP-only for now.
+Todos are reachable from the shell too: `hive todos` lists the current project's todos, open work by default (`--all` for everything, `--status <s>` for one status, `--tag <t>` for one lane; an unarchived todo with status `open` or `in_progress` tagged `needs-human` puts its project in the [portfolio](queen.md#the-portfolio)'s waiting-on-you lane), marking blocked items so you don't pick up something that can't start yet. `hive todo <id>` prints one todo in full, comments included and never truncated, since a worker's handoff is often the only record of what it did. Both commands are read-only and never register a directory: outside a registered project they exit 1 with a stderr line naming `hive init`, as do `hive pads`, `hive pad`, `hive runbook`, `hive posture` and `hive profile read`; creating, completing, and commenting stay MCP-only for now.

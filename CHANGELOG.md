@@ -1,5 +1,208 @@
 # Changelog
 
+## 1.15.3 - 2026-11-19
+
+- Workers no longer inherit npm's settings when hive runs through `npx`. When an npx-launched hive server started the tmux server, every worker pane received about 20 `npm_*` variables from npm exec, including `npm_config_force`, `npm_config_yes`, `npm_config_package` and any `npm_config_min_release_age` set for the server. A worker's own `npm` and `npx` then ran with the server's settings, ignored a repository's `.npmrc` release-age rule, and could fail to find the tool it asked for. hive now leaves `npm_*`, `INIT_CWD` and `NODE` out of the environment it hands tmux when it runs under npm exec. A tmux server started from your terminal or by `hive lead` was never affected.
+- The install guide explains why the managed `npx` entry fails with `EBADDEVENGINES` in a repository whose `package.json` names pnpm (or another manager) under `devEngines.packageManager`, and how to fix it: set `npm_config_force=true` in the server's environment.
+- For contributors: `npm test` now stops at once with an `npm install` instruction when the checkout's own `node_modules` is missing or incomplete, instead of half-running against a parent folder's packages.
+- After upgrading, restart every hive session and the lead.
+
+## 1.15.2 - 2026-11-17
+
+- A lead handoff no longer stalls while the lead is watching an artifact it asked to watch. Before, only artifact watches started by publishing let the handoff through; a watch started on request counted as live background work, so every attempt was refused and the lead was asked again about every 13 minutes. Any artifact live-update watch now lets the handoff through, and the new session is asked to re-watch it. Other live background work still blocks the handoff.
+- After upgrading, restart every hive session and the lead.
+
+## 1.15.1 - 2026-11-17
+
+- `agent_park` no longer ends a live worker closed instead of parked. Another hive session's cleanup could close the worker between the park killing its pane and recording the park, which left the worker with no parked branch. The park now holds the store's write lock across both steps.
+- `question_ask` and `question_update` accept a header over 12 characters. They cut it at a word boundary and report the stored value as `header_truncated`.
+- A choice question can leave `recommended` off the options that are not recommended; it counts as false. Exactly one option must still be recommended.
+- A choice question can omit `default_answer`; it takes the recommended option's label. A given value that differs is still refused. A free-text question still needs one.
+- `question_answer` and `hive answer` accept a repeat of the stored answer and return `already_answered: true` instead of an error. A different answer, different notes, or a withdrawn question still refuses.
+- `todo_create` and `todo_update` accept a slug over 40 characters. They cut it at a word boundary and report the stored value as `slug_truncated`.
+- When `pad_edit` cannot find `old_text`, the error names the pad's current revision. If the text matches once when whitespace is ignored, it also names the line where it starts. The edit is not applied.
+- When no running agent matches a name, the error lists the running agents. A parked agent's refusal says to address it by `agent_id`.
+- Updated `better-sqlite3` to 13.2.0.
+- After upgrading, restart every hive session and the lead.
+
+## 1.15.0 - 2026-11-17
+
+- A worker's leases are now released when hive closes it, parks it, or finds its pane gone. Before, a lease held by a closed worker blocked everyone until its TTL ran out. `agent_close` and `agent_park` list the released keys in `released_leases`. `agent_close(row_only: true)` keeps the leases, because it does not stop the pane. A lead's leases and other actors' leases are untouched. This is on by default.
+- `lease_acquire` has an opt-in wait mode. With `wait: true` on a held key, you join a first-come, first-served queue and get back `queued: true` and your `position`. When the lease is released or expires, hive gives it to the first waiter whose session is still running, with the TTL that waiter asked for, then sends that waiter one wake naming the key and the new expiry. The wake can arrive after that time if delivery is held, so check it, and call `lease_acquire` again before then to extend. `max_wait_seconds` (default 3600) ends a wait with one "gave up" wake, and `lease_release` on a key you are waiting for leaves the queue. A session hive cannot wake is refused `wait: true`. Without `wait`, `lease_acquire` behaves as before. This release adds a database migration for the waiter queue.
+- New `hive project mv <new-path>` moves a registered project's checkout and repoints hive's records, Claude Code's project storage and `.claude.json` entry, Codex trust entries, and linked Git worktrees. It previews by default; `--apply` makes the changes, backing up each config file first. Run it again after an interrupted apply, or after moving the folder by hand, and it repairs what is left. It refuses while any hive agent in the project is running, on a collision at the destination, across file systems, and for hive's own checkout. Close Claude Code and Codex before applying. Codex sessions saved under the old path are listed by `codex resume --all`.
+- A lead handoff now retries the pane restart up to three times when tmux reports `fork failed: Device not configured`. That error closes the old lead before the new one starts, so before this a handoff that hit it ended with no lead. Timeouts and other errors still fail at once.
+- After upgrading, restart every hive session and the lead. Lease waiting needs every session that shares the store on this release.
+
+## 1.14.0 - 2026-11-15
+
+- Wakes can be scheduled at a local clock time. `wake_set(at: "19:00", body)` fires at the next 19:00, and `repeat: "daily"` fires every day at that time, including across daylight-saving changes, where a fixed `repeat_every_seconds: 86400` drifts by an hour. The wake keeps the time zone of the server that created it. On a day when the time does not exist (spring forward) the wake skips that day; when it happens twice (fall back) it fires at the first. A daily wake fires at most once per local date. `wake_update` changes `at` and `repeat`, and `wake_get` and `wake_list` show `at`, `repeat` and `time_zone`. `delay_seconds` and `repeat_every_seconds` are unchanged. This release adds a database migration for the new schedule columns.
+- New `hive pad <name> --export` writes the pad to a revision-stamped temp file and prints its path without opening an editor.
+- `hive pad <name> --save <file>` now always checks a revision. A file without the `.r<N>.md` marker needs `--revision <n>`, the revision you edited; before, such a file was saved over whatever was current. A successful save removes only hive's own temp export and keeps any other file.
+- Documentation updates across the handoff, doctor, profile and tools pages.
+- Updated `hono` and `@hono/node-server`.
+- After upgrading, restart every hive session and the lead. A session started before the upgrade refuses `at` and `repeat`.
+
+## 1.13.0 - 2026-11-12
+
+- A lead can start its own handoff. Run `hive lead-handoff --pad <id> --revision <n>` without `--request` after writing the `hive-lead-handoff` pad, and hive restarts the lead's pane with a fresh session that receives the pad. It works without a turn budget and with `auto_handoff: false`. An existing active handoff is refused. Claude Code leads only; a Codex lead is refused before any request is recorded. This release adds a database migration that allows the new manual handoff reason.
+- Automatic lead handoff no longer stalls when the lead has an artifact live-update monitor running. The successor session is told which artifact watches to restore. Other live background tasks still block the restart.
+- When a handoff waits on live background tasks for five minutes, hive tells the lead which tasks are blocking it, and lets it choose to stop them or keep waiting. The notice repeats only when the set of blocking tasks changes. This notice is on by default.
+- `hive doctor` explains how to install tmux or Claude Code when either is missing.
+- New quick start guide (`docs/quickstart.md`) takes you from install to a lead with one worker. The README and install guide now state that tmux is required for the lead and every worker.
+- After upgrading, restart every hive session and the lead.
+
+## 1.12.1 - 2026-11-03
+
+- Workers spawned by an MCP server launched with `npx` no longer inherit npm exec's PATH prefix. Before, a worker's PATH started with the `_npx` bin dir, a `node_modules/.bin` for every directory from the lead's working directory up to `/`, and npm's `node-gyp-bin`, so tools such as `biome` resolved from the main checkout instead of the worker's worktree. Hive now drops that prefix when it creates a pane, and the pane's shell still adds its own startup entries. Servers not launched through npm exec are unchanged. PATH entries that a version manager adds before npm runs, such as asdf's Node install directory, are kept.
+- `hive doctor` warns when `NO_COLOR` is set in the tmux server's environment, and names the fix. With it set, Claude Code drops the dim styling on its input-box suggestions, so hive reads a suggestion as unsubmitted input.
+- After upgrading, restart every hive session.
+
+## 1.12.0 - 2026-11-02
+
+- New `hive crew-restore [--dry-run] [--json]` brings back workers whose panes were lost to a crash or a reboot. It resumes each one on its existing row, with its session, working directory, model and launch arguments, and never replays the previous assignment. Output lists only workers that could be recovered and counts the rest as `not considered`; `--json` adds a numeric `not_considered`. Use `agent_resume` for one closed worker.
+- Hive now records why a worker's row closed. A worker whose pane was confirmed gone is marked for crash recovery, while `agent_close` and `agent_park` are excluded. A crashed Codex worker's home is kept for seven days from the detected loss so it can be resumed, then reaped; a deliberate close releases it right away. Older rows are never treated as crashes.
+- New `agent_fork` tool starts a new worker from an existing Claude Code or Codex worker's session, with its own row, pane and session. The source worker is unchanged. The child inherits cwd, model, effort and read-only mode, gets no assignment and no todo link by default, and does not get a copy of the worktree.
+- Hive holds due wakes and submitted messages while a worker's or lead's harness is at its usage limit, and refuses a new spawn, resume or fork on that harness in the same project with a retry time. A known reset releases after a 60-second grace period; an unknown one after six hours. A Codex worker with a known reset gets one `continue` after the reset if its pane still shows the limit. Hive reads only local transcripts and panes and makes no usage-service request. There is no configuration key.
+- New `hive layout` gathers this project's live worker panes into the lead window and restores the configured layout. `agent_spawn` explains `placement: "window"` and points at `hive layout`.
+- New project-only `completion_gate` key in `hive.yml`: an argv list hive runs before an unfinished todo is completed. A nonzero exit, timeout (30 seconds), untrusted command or invalid field refuses the completion, and the error carries the reason and the tail of each output stream. `hive lead` approves the command like other project commands. The key is absent by default, so completions behave as before.
+- Updated the `@hono/node-server` lockfile entry out of a vulnerable range.
+- After upgrading, restart every hive session and the lead.
+
+## 1.11.9 - 2026-10-30
+
+- `quiet_messaging` now defaults to on, including when no `hive.yml` exists. Existing installs with a running lead need to restart it after upgrading to use the socket; leads started without the generated hooks keep typed delivery until then. Set `quiet_messaging: false` to keep typed delivery. Restart your lead after upgrading.
+- `lead_sidebar` now defaults to on for Claude leads, including when no `hive.yml` exists. Existing leads need a restart to load it. On terminals narrower than 144 columns, the sidebar does not dock automatically; run `/hive-crew` to open it. Set `lead_sidebar: false` to disable it. Restart your lead after upgrading.
+- With a valid `lead_turn_budget`, `auto_handoff` now defaults to on. Existing setups with a budget and no `auto_handoff` key will start handing off after upgrading; set `lead_turn_budget.auto_handoff: false` to keep the current session. Restart every hive session and the lead after upgrading so all servers honor message holds.
+
+## 1.11.8 - 2026-10-20
+
+- The MCP server reports its real version in the `initialize` handshake (`serverInfo.version`). Before, it always said `0.1.0`. This helps when a managed MCP config pins a version, such as `npx -y --package=@cmgmyr/hive@1.11.8 hive-mcp`, because the handshake now names the build that is running.
+- Updated dependencies: `zod` and `hono`. The `hono` update includes a fix for GHSA-5r4p-p66f-jhc7 in `serveStatic`, which hive does not use.
+- After upgrading, restart every hive session.
+
+## 1.11.7 - 2026-10-19
+
+- Every `hive` command that parses arguments now refuses a flag it does not know, with exit 1 and a message naming the flags it takes. Before, `hive todos`, `hive todo`, `hive status`, `hive pads`, `hive backups`, `hive runbook`, `hive posture`, `hive profile`, `hive kickoff`, `hive statusline` and `hive --version` ignored a misspelled flag and ran anyway. To pass text that starts with `-` as a positional argument, put it after `--`.
+- `hive todos --status=open` and `--tag=<t>` are refused. Write `--status open` and `--tag <t>`.
+- `hive lead` and `hive attach` say `unknown argument` instead of `unknown flag` when they refuse a flag.
+- The queen's portfolio counts a resumed worker that is idle and has no todo as `other`, not `idle`.
+- Internal: the wake-pane lease, the socket delivery hop, wake lifecycle checks and a few small parsers each have a single implementation now. Wake delivery behaviour is unchanged.
+- After upgrading, restart every hive session.
+
+## 1.11.6 - 2026-10-16
+
+- No behaviour change. Shared agent, wake, pad and todo logic moved out of the MCP tool modules into modules that the CLI and the MCP server both use, which removes every import cycle in `src/`. Tool names, schemas, descriptions and outputs are unchanged, and so is every CLI command's output and exit code.
+- For contributors: a new test fails the suite on any import cycle under `src/`, or on any module other than the MCP entry that imports a tool module. `docs/architecture.md` section 2 describes the new layering.
+- After upgrading, restart every hive session.
+
+## 1.11.5 - 2026-10-15
+
+- A lead handoff's grace period now holds the lead's wakes for at most 15 minutes from when grace began, like the other handoff holds. Before, a grace hold whose driver had died could hold wakes indefinitely. The store migrates to schema 45 on first open to apply the same limit to wake claims; hive takes a backup before the migration runs.
+- Backlog todos no longer count as open or as waiting on you. `hive status`, the statusline, the project dashboard, the crew sidebar, `hive portfolio`, the queen dashboard and `hive next` now agree: only an unarchived todo that is `open` or `in_progress` counts, and only such a todo tagged `needs-human` puts a project in the waiting-on-you lane. The dashboard says so when a project has only backlog todos.
+- `hive start <name>` now exits 1 when the process failed to launch, when hive refused to start it (a reserved name, an unapproved command, a directory outside the project, or a tmux server it could not probe), and exits 0 only when the process started or was already running. `hive lead`'s automatic starts are unchanged.
+- Every git read hive makes ignores `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` from the environment and gives up after 2 seconds, so a hook that sets them can no longer make hive read another repository's branch, and a stuck git call can no longer hang a command.
+- Updated dependencies: `@modelcontextprotocol/sdk`, `smol-toml`, `zod` and `@types/node`.
+- After upgrading, restart every hive session.
+
+## 1.11.4 - 2026-10-14
+
+- `kv_get` and `kv_list` no longer fail on a stored value that is not valid JSON. They return it as a raw string. `kv_list`'s `prefix` now matches literally, so `_`, `%` and `\` in a prefix are plain characters and matching is case-sensitive.
+- `help()` no longer says a session falls back to the only registered project. Its tool descriptions now match the tools for lead wake cancellation, answer wake rerouting, worker options, list limits and `queen_audit_list`.
+- `agent_rename` no longer retitles a pane that is in tmux copy mode. The row is still renamed. `agent_send` checks again that it owns the pane before it captures the `wait_ms` tail.
+- Advice to re-pin or rebuild hive is now a command you can run as printed. Native-addon errors, the dispatcher warning, the generated shim and `hive doctor` name the Node interpreter and CLI path directly, instead of telling you to run `hive setup` through a `hive` command that may be stale. `hive doctor` mentions `scripts/sweep-scratch.mjs` only in a checkout that has it.
+- The scheduler runs each maintenance step and each due wake on its own, so one failure no longer stops the rest of that tick. A wake that fails after its text was pasted now leaves a record.
+- A stall notice about a waiting worker is filed again if the earlier one was never typed. A dead-process notice is sent only when hive can read the lead's screen.
+- After upgrading, restart every hive session.
+
+## 1.11.3 - 2026-10-13
+
+- A recipient given as a string agent id (`"41"`) or as an actor id (`"lead:41"`) now reaches that agent in `wake_set`, `wake_when_idle`, `agent_send` and the other agent tools when no running agent's name matches it. Names still come first, exactly as before: an exact name, then a unique partial name, so a ticket number still finds its worker. A number always resolves by id. The queen's wakes and messages to another project's lead use the same lookup, so a lead addressed by a string id is no longer refused.
+- The crew sidebar recovers when the directory it runs `hive crew` from is deleted. Each refresh checks that directory and falls back to the session's current directory, then the one it started in. A failed read now names the command and the directory instead of reporting only `ENOENT` on `hive`.
+- After upgrading, restart every hive session.
+
+## 1.11.2 - 2026-10-13
+
+- A wake that comes due while a freshly started Claude Code lead is still booting is no longer lost. hive holds it until the lead's input box appears, for up to 60 seconds after `hive lead` creates the pane, then delivers it. Past that window, delivery works as before. Codex leads and workers are unchanged.
+- The store migrates to schema 44 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
+## 1.11.1 - 2026-10-12
+
+- Pending questions now count as waiting on you. In `hive portfolio` and on the queen dashboard, a project with a pending question moves to the waiting-on-you lane when nothing more urgent applies, and `hive next` ranks pending questions alongside todos that need you.
+- The queen dashboard shows each project's pending-question count in its card and in a new Questions column. The project dashboard lists its pending questions and the ones the lead acted on by default. Neither shows answers.
+- When the session that asked a question has closed, `question_answer` and `hive answer` send the answer to the project's running lead instead, and say so. With no running lead, the answer is kept and no wake is queued.
+- The queen's wakes and messages to another project's lead now go to the same lead delivery would reach, so a stale lead row no longer causes a refusal. Every refusal is recorded with its reason, readable with `queen_audit_list` and `hive queen-audit`.
+- `hive doctor` no longer stops checking for old hive servers when one of them exits while it looks.
+- The store migrates to schema 43 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
+## 1.11.0 - 2026-10-11
+
+- New question record. A lead records a decision only you can make with `question_ask`, as a choice of two to four options with one recommended, or as free text. Every question carries the default the lead acts on if you never answer. `question_list`, `question_get`, `question_update` and `question_answer` read, edit, close and answer them. Asking again with the same todo or PR `ref` updates the pending question instead of adding one, and the receipt lists similar pending questions. See [Tools](docs/tools.md).
+- New `hive questions` lists a project's pending questions, then the ones the lead already acted on by default, with their options. New `hive answer <id> <answer> [--notes <text>]` answers one from any terminal. The asking session receives your answer as a wake. If the asker is not running, the answer is kept and the command says no wake was queued.
+- The crew sidebar footer shows `questions pending: N` while any are pending, and `hive crew --json` and `hive portfolio` report the count. Neither shows the question text, options or answers.
+- New opt-in setting `lead_turn_budget.auto_handoff`. With `auto_handoff: true`, hive replaces a Claude Code lead that has passed its `warn` turn count with a fresh session in the same pane, on the same lead row, so its wakes, workers and standing watches carry over. At a quiet moment hive asks the lead to write a handoff pad and run the new `hive lead-handoff` command; after a short grace period with no input from you, the pane restarts and the new session receives the pad. Typing in the lead pane postpones it, and background work in the session prevents it. It is off unless you set it. See [Configuration](docs/configuration.md).
+- While a handoff is in progress, the store holds wakes to that lead for every hive build, including servers started from an older version, until the new session finishes its first turn. Restart every hive session before turning `auto_handoff` on, so messages to the lead are held too.
+- hive's own first message to a new lead session no longer counts as you talking to it, so it no longer holds that lead's wakes for 5 minutes.
+- `hive doctor` names hive MCP servers using the same store that started before its latest migration, so you know which sessions still run old code and need a restart. It reports them and stops nothing.
+- The crew sidebar labels a worker's command by the command itself when the shell line starts with a control keyword such as `if`, `for` or `while`.
+- The store migrates to schema 42 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
+## 1.10.1 - 2026-10-09
+
+- hive works correctly with tmux 3.8. tmux 3.8 stopped reporting a pane's process id once the process exits, so a worker whose command failed at startup produced a "did not report a process id" error and lost its crash output. hive now reads the process id when it creates the pane, and works the same on tmux 3.7c and 3.8. A Claude Code or Codex worker that exits during startup is reported as exited, with its last output.
+- A spawn that fails after hive set the window to keep exited panes now always clears that setting. Before, later exits in the lead's window could stay on screen as dead panes.
+- A worker spawned with a plain command that exits immediately is now refused with "the command exited immediately". It is no longer recorded as running.
+- In the crew sidebar, an idle or waiting worker's row now shows its last activity, for example `your turn 12s · editing`.
+- After upgrading, restart every hive session.
+
+## 1.10.0 - 2026-10-09
+
+- New opt-in setting `lead_sidebar`. With `lead_sidebar: true` in `~/.hive/hive.yml` or a project's `hive.yml`, `hive lead` adds a crew pane to a Claude Code lead. The pane lists each running worker with its todo, state, current activity, run time and context use. It also lists todos tagged `needs-human` under "todos waiting on you", shows the next wake once in its footer, and warns in amber when workers are running with no standing watch. It is off unless you set it. Restart the lead after changing it. See [Crew sidebar](docs/crew.md).
+- New `hive crew --json` prints the same crew snapshot as read-only JSON. It writes nothing to the store.
+- `agent_spawn` records the worker's todo when you pass `todo_id`. If you omit it while a todo is in progress, the receipt says so, and the crew view links the worker to the todo it comments on. A worker that only writes a pad shows that pad instead.
+- The crew view labels what a worker is doing: testing, editing, reading, building, committing, reviewing or `running <command>`. For Codex workers it reads the tool calls inside `codex exec`, and a command that starts with `printf` or `echo` is labelled by the real command after it.
+- A lead that ended its session cleanly now shows as dormant, not dead, in `hive status`, `hive portfolio` and the queen dashboard. This also covers a lead that never received a typed prompt.
+- The queen dashboard shows the queen's own board, todos and pads below the portfolio. "Every project" and "Recent queen actions" now collapse, and the page remembers the choice across reloads. "Recent queen actions" moves to the end of the page.
+- The store migrates to schema 37 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
+## 1.9.1 - 2026-10-08
+
+- With `quiet_messaging` on, a worker's `agent_send` to a running Claude Code lead now arrives as one dim `Message from @hive` row instead of typed text, the same way one-shot wakes do since 1.9.0. A message over 300 characters still arrives as a one-line pointer you read with `agent_message_get`. The send receipt says `pending` until the lead confirms it, and `agent_message_get` reports the delivery state. A message the lead does not confirm in time is typed into the pane once. With the setting off, nothing changes. See [Quiet messaging](docs/projects.md#quiet-messaging).
+- With `quiet_messaging` on, repeating wakes to a Claude Code lead also arrive as a `Message from @hive` row, on every firing, marked `[hive wake #N firing #F]`. `delivery_method` reads `socket-repeating`.
+- `wake_get` and `wake_list` report `delivered_by`: the process id, version and build of the hive server that delivered each wake. An older hive server that delivered a wake leaves it empty.
+- A submitting `agent_send` with `wait_ms` returns `input_box_before`, the target's input box as hive read it just before the paste, next to the existing `input_box` read after it.
+- A prompt row drawn in a 256-color or truecolor style is now read as typed text, not as Claude's dim suggestion. Before, text in such a row did not hold a wake and did not stop `agent_send`.
+- When hive cannot connect to the tmux socket at all (for example, permission denied from a sandboxed shell), it now treats the state as unknown instead of as an empty server. `hive portfolio` no longer reports every lead as a dead pane from such a shell.
+- A Claude Code task notification no longer counts as you talking to the lead, so it no longer holds the lead's wakes.
+- The CLI exits quietly when the reader of its output closes the connection with `ENOTCONN`, as it already did for `EPIPE`.
+- The store migrates to schema 36 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
+## 1.9.0 - 2026-10-07
+
+- New opt-in setting `quiet_messaging`. With `quiet_messaging: true` in your global `~/.hive/hive.yml` or a project's `hive.yml`, a one-shot wake to a running Claude Code lead arrives as one dim `Message from @hive` row instead of a block of pasted text. Press ctrl+o to expand it. It is off unless you set it, and a project's `false` overrides a global `true`. Restart the lead with `/exit` and `hive lead` after changing it. See [Quiet messaging](docs/projects.md#quiet-messaging).
+  - `wake_get` and `wake_list` report how each wake was delivered in `delivery_method`: `socket`, `pty`, or `pty-after-socket-timeout`. A socket message the lead does not confirm within 60 seconds is typed into the pane once, marked `re-delivered`.
+  - Repeating wakes, wakes to workers and wakes to a Codex lead are still typed into the pane.
+  - Turning it on lets any local session send messages to that lead, not only hive. Workers still refuse inbound messages.
+- A lead started while a worker is still running in the project window now becomes the window's first pane, and the window re-applies your `layout`. Before, a `main-vertical` window came back with the worker on top and the lead underneath.
+- The dashboard wraps long lines in pads instead of scrolling the page sideways. With Live on, it no longer reloads while you have a pad or todo open, and a reload keeps your place on the page and inside each open pad. Scrolling restarts the reload timer the way typing does.
+- The dashboard's Live checkbox now stops the reload when you switch it off. Before, typing in the filter still re-armed it.
+- The store migrates to schema 34 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
+## 1.8.0 - 2026-10-06
+
+- The shipped `orchestration` profile has been rewritten. The old one was a skeleton; this one is a full starting point. The lead assigns todo ids, supervises the work, and accepts or rejects what comes back. Workers no longer take work off the shared queue or complete their own todos. The runbook spells out lanes, briefs, scope, worktrees, shared resources, checks, review, permissions, waiting, the context checkpoint, handback and closing a lane. The posture tells the lead to run on your strongest model tier and to spawn workers on a cheaper one with `agent_spawn`'s `model` argument.
+- The shipped orchestration profile renders new optional `hive.yml` vars: `test_command`, `suite_command`, `verify_command`, `review_command` and `worker_model`. Each var adds its section only when it is set. The `hive.yml` template that `hive init` writes lists them.
+- In a worker's done list, the gate step from your `check` var is now a line under the scoped-checks step. The numbering no longer skips a step when `check` is unset.
+- The `/hive:profile` skill matches the new profile. It starts an orchestration profile from the shipped files and offers each optional var only when your answers call for it. It reads worker text with `hive profile read worker.md`. A new section explains how to use the skill without the Claude plugin, for example from Codex.
+- The `/hive:profile` skill includes worked examples in `references/examples/`. One shipped profile renders differently for a personal repo and a work repo through `hive.yml` `vars`. There is also an annotated skeleton of the three profile files, and a prompt you can paste to your own agent to adapt the example.
+- If you forked the orchestration profile, your copy is unchanged. `hive profile list` and `hive doctor` report how far it has drifted from the new shipped files.
+- After upgrading, restart every hive session.
+
 ## 1.7.0 - 2026-10-04
 
 - hive now kills, types into, or reads the screen of a pane only when the row owns it. 1.6.0 changed what hive reports about a row's pane; this release changes what it does. Closing, parking, sending, renaming, `hive stop`, wake delivery, `hive lead`'s adopt and `scripts/restart-lead.sh` act only on a pane whose process matches the one hive recorded. After a tmux restart a pane id can name another process, and hive no longer touches it. When ownership cannot be checked, hive refuses or holds and says why.

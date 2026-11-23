@@ -4,7 +4,7 @@ import { after, before, describe, it } from "node:test";
 
 import { isolateTmux, makeFakeClaude, McpClient, scratchDirs, until } from "./helpers.mjs";
 
-const { hasTmux, cleanup } = isolateTmux("resolveDelivery's ORDER BY (todo 274)");
+const { hasTmux, cleanup } = isolateTmux("resolveWakeDelivery's ORDER BY (todo 274)");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
@@ -14,7 +14,7 @@ const { sessionName } = await import("../dist/tmux.js");
 const capture = (target) => execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString();
 
 describe(
-  "resolveDelivery's own-session lookup",
+  "resolveWakeDelivery's own-session lookup",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     let mcp;

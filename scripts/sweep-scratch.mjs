@@ -2,6 +2,8 @@
 
 import { execFileSync } from "node:child_process";
 import { platform } from "node:os";
+import { parseEtimeSeconds } from "../dist/etime.js";
+export { parseEtimeSeconds };
 
 import { isAlive as suiteLockHolderAlive, readHolder as readSuiteLockHolder, resolveLockPath } from "./suite-lock.mjs";
 
@@ -50,16 +52,6 @@ export function parsePsRows(output) {
     rows.push({ pid: Number(m[1]), ppid: Number(m[2]), etime: m[3], tty: m[4], comm: m[5] });
   }
   return rows;
-}
-
-export function parseEtimeSeconds(etime) {
-  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime) ?? /^(\d+)$/.exec(etime);
-  if (!m) return null;
-  if (m.length === 2) return Number(m[1]);
-  const [, days, hours, minutes, seconds] = m;
-  return (
-    (Number(days ?? 0) * 24 + Number(hours ?? 0)) * 3600 + Number(minutes) * 60 + Number(seconds)
-  );
 }
 
 function liveShellRows() {

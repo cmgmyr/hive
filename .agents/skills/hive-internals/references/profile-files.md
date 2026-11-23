@@ -7,7 +7,7 @@ widening resolution from three named files to any `.md` a profile carries.
 `ProfileFile` was a three-value TypeScript union (`"posture.md" |
 "runbook.md" | "worker.md"`), not a filesystem rule. `resolveProfileFile`
 already checked the user directory before the shipped one
-(`src/profiles.ts:31-35`), so a file existing only in
+(`resolveProfileFile` in `src/profiles.ts`), so a file existing only in
 `~/.hive/profiles/<name>/` resolved correctly and returned `source: "user"`
 before this lane touched anything. Widening `resolveProfileFile` /
 `readProfileFile` / `renderProfileFile` from `ProfileFile` to `string` is a

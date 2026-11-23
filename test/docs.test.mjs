@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, globSync, readFileSync, readlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { parseRulePaths } from "../scripts/covering-rules.mjs";
 import { CLI, isolateTmux, registeredToolNames, runCli, scratchDirs, toolRegistrationsByFile } from "./helpers.mjs";
@@ -29,6 +29,11 @@ const COMMANDS = (() => {
 const { RAW_ATTACH_TMUX_CONFIG, TMUX_DOC } = await import("../dist/tmux.js");
 
 describe("docs keep up with the CLI", () => {
+  it("records the crash-retention exception as a maintainer decision", () => {
+    const patterns = readRepo("docs/patterns.md");
+    assert.match(patterns, /The maintainer approved one narrow exception on 2026-11-01: record/);
+  });
+
   it("lists every command in hive --help", async () => {
     const { stdout } = await runCli(["--help"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     for (const command of COMMANDS) {
@@ -185,6 +190,20 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
+  it("src/AGENTS.md rule table matches rule frontmatter", () => {
+    const rows = [...readRepo("src/AGENTS.md").matchAll(RULE_ROW_RE)];
+    const ruleFiles = globSync("*.md", { cwd: join(REPO, ".claude/rules") });
+    assert.equal(rows.length, ruleFiles.length, "src/AGENTS.md's table must have one row per rule file");
+
+    for (const [, rulePath, firesOnCell] of rows) {
+      assert.deepEqual(
+        backtickPaths(firesOnCell),
+        parseRulePaths(readRepo(rulePath)).sort(),
+        `${rulePath}: src/AGENTS.md's Fires-on column disagrees with the rule's frontmatter`,
+      );
+    }
+  });
+
   it("would have failed against the real pre-fix row from PR #159 (commit 61b6f6d)", () => {
     const preFixRow =
       "| `.claude/rules/tmux-and-panes.md` | `src/tmux.ts`, `src/spawn.ts`, `src/scheduler.ts`, `src/tools/agents.ts` | " +
@@ -264,17 +283,17 @@ describe("docs keep up with the CLI", () => {
 });
 
 describe("docs enumerate every statusline hold label the CLI can print", () => {
-  const cli = readFileSync(CLI, "utf8");
+  const cli = readFileSync(join(dirname(CLI), "heldLabel.js"), "utf8");
 
   const DECLARED = (() => {
     const decl = /HELD_REASON_LABELS = \[([\s\S]*?)\]/.exec(cli);
-    assert.ok(decl, "HELD_REASON_LABELS not found in dist/cli.js");
+    assert.ok(decl, "HELD_REASON_LABELS not found in dist/heldLabel.js");
     return [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   })();
 
   const RETURNED = (() => {
     const fn = /function heldReasonLabel\([\s\S]*?\n\}/.exec(cli);
-    assert.ok(fn, "heldReasonLabel not found in dist/cli.js");
+    assert.ok(fn, "heldReasonLabel not found in dist/heldLabel.js");
     return [...fn[0].matchAll(/return "([^"]+)"/g)].map((m) => m[1]);
   })();
 
@@ -328,9 +347,11 @@ describe("docs keep up with the MCP surface", () => {
     }
   });
 
-  it("documents every registered tool in docs/tools.md, and names nothing extra", () => {
+  it("documents every registered tool exactly once in docs/tools.md, and names nothing extra", () => {
 
     const documented = readmeToolNames(toolsSection(readRepo("docs/tools.md")));
+    const duplicates = [...new Set(documented.filter((name, index) => documented.indexOf(name) !== index))];
+    assert.deepEqual(duplicates, [], `docs/tools.md has duplicate tool rows: ${duplicates.join(", ")}`);
     for (const name of REGISTERED_TOOLS) {
       assert.ok(documented.includes(name), `${name} is registered but has no row in docs/tools.md's table`);
     }
@@ -601,7 +622,8 @@ it("documents the restart remedy and the lead-only generated notice without weak
   assert.match(doc, /server that predates it cannot report/);
   const rule = readRepo(".claude/rules/worker-state.md");
   assert.match(rule, /fourth generated notice/);
-  assert.match(readRepo("AGENTS.md"), /four generated exceptions/);
+  assert.match(readRepo("AGENTS.md"), /the generated exceptions that are not/);
+  assert.match(readRepo("AGENTS.md"), /watched-pane trailer/);
   assert.match(doc, /first eight characters of each build id/);
   assert.match(rule, /Authored wake bodies stay verbatim/);
   assert.match(rule, /worker's server files no restart notice/);
@@ -669,7 +691,7 @@ describe("docs/security.md cites every source file that can touch the network, s
     dns: "network",
     "dns/promises": "network",
   };
-  const CODE_FILE = /\.(ts|mjs|cjs|js|json)$/;
+  const CODE_FILE = /\.(ts|tsx|mjs|cjs|js|json)$/;
 
   function strip(source) {
     let noComments = "";
@@ -726,6 +748,7 @@ describe("docs/security.md cites every source file that can touch the network, s
     }
     if (/\bfetch\s*\(/.test(blanked)) add("network", "fetch");
     if (/\bnew\s+WebSocket\b/.test(blanked)) add("network", "WebSocket");
+    if (/\.process\.(?:run|spawn)\s*\(/.test(blanked)) add("process", "$.process.run");
     return hits;
   }
 
@@ -739,7 +762,7 @@ describe("docs/security.md cites every source file that can touch the network, s
 
   function citedFiles() {
     const page = readRepo("docs/security.md");
-    return new Set([...page.matchAll(/\b((?:src|claude-plugin)\/[\w./-]+\.(?:ts|mjs|js|json)):\d+/g)].map((m) => m[1]));
+    return new Set([...page.matchAll(/\b((?:src|claude-plugin)\/[\w./-]+\.(?:ts|tsx|mjs|js|json)):\d+/g)].map((m) => m[1]));
   }
 
   function uncitedFindings(files, readFile, cited) {
@@ -815,6 +838,16 @@ describe("docs/security.md cites every source file that can touch the network, s
     assert.ok(findings.some((l) => l.startsWith("src/plant-multiline.ts calls rmSync (write)")));
     assert.ok(findings.some((l) => l.startsWith("src/plant-alias.ts calls spawnSync (process)")));
     assert.ok(findings.some((l) => l.startsWith("src/plant-fetch.ts calls fetch (network)")));
+  });
+
+  it("uncited TSX mod process call is caught", () => {
+    const files = ["claude-plugin/plant/hooks/register.tsx"];
+    const read = () => "const out = await $.process.run(['sh', '-c', 'id'])";
+
+    assert.ok(CODE_FILE.test(files[0]));
+    assert.match(uncitedFindings(files, read, new Set())[0], /calls \$\.process\.run \(process\)/);
+    assert.deepEqual(uncitedFindings(files, read, new Set(files)), []);
+    assert.deepEqual(scanSource(files[0], "// $.process.run(x)\nconst s = \"$.process.run(x)\""), []);
   });
 
   it("stays quiet on harmless text: comments, string contents, type imports and read-only fs imports", () => {

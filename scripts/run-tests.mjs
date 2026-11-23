@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,8 +24,41 @@ import {
 } from "./wedged-shells.mjs";
 
 const testDir = fileURLToPath(new URL("../test", import.meta.url));
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const passthrough = process.argv.slice(2);
 const positionalArgs = passthrough.filter((arg) => !arg.startsWith("-"));
+
+const EXPLICIT_NODE_MODULE_FILES = [
+  "better-sqlite3/lib/index.js",
+  "yaml/dist/index.js",
+  "zod/index.js",
+];
+
+function localDependencyFailures() {
+  const nodeModules = join(repoRoot, "node_modules");
+  if (!existsSync(nodeModules)) return ["node_modules/ is absent"];
+  if (!statSync(nodeModules).isDirectory()) return ["node_modules is not a directory"];
+
+  const packageNames = Object.keys(JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).dependencies ?? {});
+  const missing = [];
+  for (const name of packageNames) {
+    if (!existsSync(join(nodeModules, ...name.split("/"), "package.json"))) missing.push(name);
+  }
+  for (const path of EXPLICIT_NODE_MODULE_FILES) {
+    if (!existsSync(join(nodeModules, path))) missing.push(path);
+  }
+  return missing;
+}
+
+const missingLocalDependencies = localDependencyFailures();
+if (missingLocalDependencies.length > 0) {
+  console.error(
+    `[run-tests] local dependencies are absent or incomplete in ${join(repoRoot, "node_modules")}:\n` +
+      missingLocalDependencies.map((name) => `  ${name}`).join("\n") + "\n" +
+      `Run npm install in ${repoRoot} before running the test suite.`,
+  );
+  process.exit(1);
+}
 
 const named = positionalArgs.length > 0;
 

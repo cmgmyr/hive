@@ -14,6 +14,8 @@ A context-fill threshold (a percentage), and who should receive a checkpoint and
 
 ## Add
 
+The shipped orchestration runbook and `worker.md` already carry a context-checkpoint section, active wherever `context_checkpoint_percent` is set. On that base, writing the key is the whole recipe; add the blocks below only to name a recipient other than the lead. A forked profile without that section needs them.
+
 `context_checkpoint_percent` at the top level of `hive.yml`:
 
 ```yaml

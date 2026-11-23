@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -47,6 +48,9 @@ const fixture = (name, body) => {
 };
 
 const out = (expr) => `process.stdout.write(JSON.stringify(${expr}));\n`;
+const taskNotificationPrompt = JSON.parse(
+  readFileSync(new URL("./fixtures/hook-payloads/prompt-task-notification.json", import.meta.url), "utf8"),
+).prompt;
 
 describe("todo 455 commit 2: the conversation hold", () => {
   it("holds a wake to the lead's pane when a human message landed within the TTL", () => {
@@ -78,6 +82,34 @@ describe("todo 455 commit 2: the conversation hold", () => {
       `,
     );
     assert.ok(result.row.fired_at !== null, "with no prior human turn, the wake must deliver on schedule");
+  });
+
+  it("a task-notification prompt does not hold a due wake", () => {
+    const result = fixture(
+      "task-notification-not-human",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-30 seconds', ${JSON.stringify(taskNotificationPrompt)});
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.ok(result.row.fired_at !== null, "a task-notification prompt must not hold wake delivery");
+    assert.equal(result.row.held_reason, null);
+  });
+
+  it("a human prompt containing <task-notification> mid-text still holds", () => {
+    const result = fixture(
+      "human-prompt-with-task-notification-text",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-30 seconds', 'see <task-notification> above');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.equal(result.row.fired_at, null);
+    assert.match(result.row.held_reason ?? "", /talked to this lead/);
   });
 
   it("delivers when the most recent prompt row is hive's own typed wake, not a human message", () => {
@@ -189,6 +221,54 @@ describe("todo 455 commit 2: the conversation hold", () => {
   });
 });
 
+describe("todo 1851: hive's own first message does not start the conversation hold", () => {
+  const logRow = (offset, state, prompt) =>
+    `db.prepare("INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES ('lead:1', 'prompt', ?, ?, datetime('now', ?))")
+       .run(${JSON.stringify(state)}, JSON.stringify({ prompt: ${JSON.stringify(prompt)} }), ${JSON.stringify(offset)});`;
+
+  it("hive's first message to a lead does not start a conversation hold", () => {
+    const result = fixture(
+      "first-message-not-held",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      ${logRow("-20 seconds", "first_message", "You are taking over as this project's lead")}
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.ok(result.row.fired_at !== null, "the first message is hive's own, not a human talking");
+  });
+
+  it("a human prompt after hive's first message still holds", () => {
+    const result = fixture(
+      "human-after-first-message-held",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      ${logRow("-60 seconds", "first_message", "You are taking over as this project's lead")}
+      ${logRow("-20 seconds", "working", "what is the status")}
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.equal(result.row.fired_at, null);
+    assert.match(result.row.held_reason ?? "", /talked to this lead/);
+  });
+
+  it("conversation hold falls back to the prompt log when the lead has no turn snapshot", () => {
+    const held = fixture(
+      "no-snapshot-falls-back-to-log-held",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-20 seconds', 'plain claude lead, no first-message env');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId), snapshots: db.prepare('SELECT COUNT(*) AS n FROM lead_turn_state').get().n }")}
+      `,
+    );
+    assert.equal(held.snapshots, 0);
+    assert.equal(held.row.fired_at, null);
+  });
+});
+
 describe("todo 1691: the conversation hold's ceiling reaches one-shot idle wakes", () => {
   const idleSetup = (metOffset) => `
       const workerRow = db.prepare("SELECT id FROM agents WHERE actor_id = 'agent:9'").get().id;
@@ -245,3 +325,67 @@ describe("todo 1691: the conversation hold's ceiling reaches one-shot idle wakes
 
 });
 
+const SOCKET_SENDER = "uds:/tmp/scratch/wake-sender.sock";
+const envelope = (body, name = "hive") =>
+  `<cross-session-message from="${SOCKET_SENDER}" from-name="${name}">\n${body}\n</cross-session-message>`;
+const FOOTER = "\n\nAutomated hive worker message. Do not reply to this socket sender.";
+const shortReport = envelope(`[hive:worker w1] [message #7, 12 chars] short report${FOOTER}`);
+const pointerReport = envelope(`[hive:worker w1] [message #8, 900 chars] ${"a".repeat(140)}… agent_message_get(8) for the full text.${FOOTER}`);
+
+describe("todo 1767: a worker message delivered over the lead's socket is not human conversation", () => {
+  const outcome = (name, prompts) =>
+    fixture(
+      name,
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      for (const [offset, prompt] of ${JSON.stringify(prompts)}) logPrompt('lead:1', offset, prompt);
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    ).row;
+
+  it("both socket worker envelope shapes (short and pointer) stay excluded from human conversation", () => {
+    for (const [name, prompt] of [["socket-short", shortReport], ["socket-pointer", pointerReport]]) {
+      const row = outcome(name, [["-30 seconds", prompt]]);
+      assert.ok(row.fired_at !== null, `${name}: a hive worker envelope must not hold the wake`);
+      assert.equal(row.held_reason, null, name);
+    }
+  });
+
+  it("human prose mentioning a socket report still holds", () => {
+    for (const [name, prompt] of [
+      ["prose-mentions-tag", "did you read [hive:worker w1] [message #7, 12 chars] yet?"],
+      ["prose-quotes-envelope", `look at this one: ${shortReport}`],
+    ]) {
+      const row = outcome(name, [["-30 seconds", prompt]]);
+      assert.equal(row.fired_at, null, `${name}: a human sentence quoting the envelope is still conversation`);
+      assert.match(row.held_reason ?? "", /talked to this lead/, name);
+    }
+  });
+
+  it("non-hive envelope and ordinary envelope body still hold", () => {
+    for (const [name, prompt] of [
+      ["peer-envelope", envelope("[hive:worker w1] [message #7, 12 chars] short report", "peer")],
+      ["hive-envelope-prose", envelope("an ordinary sentence with no worker tag")],
+      ["hive-envelope-tag-without-id", envelope("[hive:worker w1] no message marker here")],
+    ]) {
+      const row = outcome(name, [["-30 seconds", prompt]]);
+      assert.equal(row.fired_at, null, `${name}: only hive's own tagged worker envelope is excluded`);
+      assert.match(row.held_reason ?? "", /talked to this lead/, name);
+    }
+  });
+
+  it("task-notification exclusion survives worker socket delivery", () => {
+    const delivered = outcome("task-notification-and-socket", [
+      ["-40 seconds", shortReport],
+      ["-20 seconds", taskNotificationPrompt],
+    ]);
+    assert.ok(delivered.fired_at !== null, "neither automated prompt is a human turn");
+    const held = outcome("task-notification-socket-and-human", [
+      ["-40 seconds", "a human question"],
+      ["-30 seconds", shortReport],
+      ["-20 seconds", taskNotificationPrompt],
+    ]);
+    assert.equal(held.fired_at, null, "the human turn behind both automated prompts still holds");
+  });
+});

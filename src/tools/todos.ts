@@ -1,205 +1,81 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { COMMENT_COUNT_SQL, getTodo, getTodoDetail, listTodoSummaries, type TodoDetail, type TodoListFilter, type TodoRow, type TodoSummary } from "../todos.js";
+import { TODO_STATUSES } from "../todoScope.js";
+export { COMMENT_COUNT_SQL, getTodo, getTodoDetail, listTodoSummaries, type TodoDetail, type TodoListFilter, type TodoRow, type TodoSummary } from "../todos.js";
+export { TODO_STATUSES } from "../todoScope.js";
 import { commitQueenStateWrite } from "../queenAudit.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
 import { findUnsafeControlChar } from "../tmux.js";
 import { SLUG_MAX_LEN, fallbackSlug } from "../slug.js";
+import { cutAtWordBoundary } from "../wordBoundary.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
-
-interface TodoRow {
-  id: number;
-  project_id: number;
-  title: string;
-  body: string;
-  priority: string;
-  status: string;
-  locked_by: string | null;
-  tags: string;
-  slug: string;
-  created_at: string;
-  completed_at: string | null;
-  archived_at: string | null;
-  updated_at: string;
-  open_blockers?: number;
-  comment_count?: number;
-}
+import { NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_FROM_WHERE, OPEN_BLOCKERS_SQL } from "../todoScope.js";
+import { loadProjectYml } from "../projectYml.js";
+import {
+  assertTodoCompletionGateCurrent,
+  assertValidTodoCompletionGate,
+  runTodoCompletionGate,
+  type TodoCompletionGateInput,
+} from "../todoCompletionGate.js";
 
 const priorityParam = z.enum(["high", "medium", "low"]);
 
 const slugParam = z
   .string()
   .trim()
-  .max(SLUG_MAX_LEN)
   .refine((s) => findUnsafeControlChar(s, new Set()) === null, {
 
     message: "slug cannot contain control characters, including tabs or newlines",
   })
   .describe(
-    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max). When set, it renders beside the id: bracketed in \`hive todos\`, \`hive todo <id>\`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in \`hive todos\`/\`hive todo <id>\`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to unset.`,
+    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max). Longer values are cut at a word boundary and reported as slug_truncated. When set, it renders beside the id: bracketed in \`hive todos\`, \`hive todo <id>\`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in \`hive todos\`/\`hive todo <id>\`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to unset.`,
   )
   .optional();
 
 export { SLUG_MAX_LEN, fallbackSlug };
 
-export const TODO_STATUSES = ["open", "in_progress", "backlog", "completed"] as const;
 const statusParam = z.enum(TODO_STATUSES);
 
-const OPEN_BLOCKERS_FROM_WHERE = `FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-   WHERE b.todo_id = t.id AND bt.status != 'completed'`;
-
-export const OPEN_BLOCKERS_SQL = `SELECT 1 ${OPEN_BLOCKERS_FROM_WHERE}`;
-
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
-   WHERE b.blocker_id = ? AND t.status != 'completed' AND t.archived_at IS NULL`;
+   WHERE b.blocker_id = ? AND t.${NOT_COMPLETED_TODO_SQL} AND t.archived_at IS NULL`;
 
-export const COMMENT_COUNT_SQL = `(SELECT COUNT(*) FROM todo_comments c WHERE c.todo_id = t.id)`;
+const TODO_ROW_FIELDS = [
+  "id", "project_id", "title", "body", "priority", "status", "locked_by", "tags", "slug",
+  "created_at", "completed_at", "archived_at", "updated_at",
+] as const;
 
-const SUMMARY_SQL = `
-  SELECT t.*,
-    (SELECT COUNT(*) ${OPEN_BLOCKERS_FROM_WHERE}) AS open_blockers,
-    ${COMMENT_COUNT_SQL} AS comment_count
-  FROM todos t`;
-
-function getTodo(projectId: number, todoId: number): TodoRow {
-  const row = db
-    .prepare(`${SUMMARY_SQL} WHERE t.project_id = ? AND t.id = ?`)
-    .get(projectId, todoId) as TodoRow | undefined;
-  if (!row) throw new Error(`No todo with id ${todoId} in project ${projectId}. Call todo_list.`);
-  return row;
+function assertTodoSnapshot(actual: TodoRow, expected: TodoRow): void {
+  if (TODO_ROW_FIELDS.some((field) => actual[field] !== expected[field])) {
+    throw new Error(`[todo_completion_gate:changed] todo ${expected.id}; exit unavailable`);
+  }
 }
 
-export interface TodoSummary {
-  todo_id: number;
-  title: string;
-  slug: string;
-  status: string;
-  priority: string;
-  tags: string[];
-  archived: boolean;
-  is_blocked: boolean;
-  open_blockers: number;
-  comment_count: number;
-  updated_at: string;
-}
-
-function summarize(row: TodoRow): TodoSummary {
-  return {
-    todo_id: row.id,
-    title: row.title,
-
-    slug: row.slug || fallbackSlug(row.title) || `todo ${row.id}`,
-    status: row.status,
-    priority: row.priority,
-    tags: parseTags(row.tags),
-    archived: row.archived_at != null,
-    is_blocked: (row.open_blockers ?? 0) > 0,
-    open_blockers: row.open_blockers ?? 0,
-    comment_count: row.comment_count ?? 0,
-    updated_at: row.updated_at,
+async function throughCompletionGate<T>(
+  projectId: number,
+  snapshot: TodoRow,
+  title: string,
+  apply: (expected?: TodoRow) => T,
+): Promise<T> {
+  const project = resolveProject(projectId);
+  const loaded = loadProjectYml(project.path);
+  const argv = loaded.config?.completion_gate;
+  const input: TodoCompletionGateInput = {
+    projectId,
+    projectPath: project.path,
+    todoId: snapshot.id,
+    title,
+    actorId: "",
+    argv: argv ?? [],
   };
-}
-
-export interface TodoListFilter {
-  statuses?: string[];
-  priority?: string;
-  query?: string;
-  tags?: string[];
-  isBlocked?: boolean;
-  includeArchived?: boolean;
-  limit?: number;
-  offset?: number;
-}
-
-export function listTodoSummaries(projectId: number, filter: TodoListFilter = {}) {
-  const limit = Math.min(filter.limit ?? 50, 200);
-  const offset = filter.offset ?? 0;
-  let sql = `${SUMMARY_SQL} WHERE t.project_id = ?`;
-  const params: unknown[] = [projectId];
-  if (!filter.includeArchived) {
-    sql += " AND t.archived_at IS NULL";
-  }
-  if (filter.statuses && filter.statuses.length > 0) {
-    sql += ` AND t.status IN (${filter.statuses.map(() => "?").join(",")})`;
-    params.push(...filter.statuses);
-  }
-  if (filter.priority) {
-    sql += " AND t.priority = ?";
-    params.push(filter.priority);
-  }
-  if (filter.query) {
-
-    sql += " AND (t.title LIKE ? OR t.body LIKE ? OR t.slug LIKE ?)";
-    params.push(`%${filter.query}%`, `%${filter.query}%`, `%${filter.query}%`);
-  }
-  sql += " ORDER BY t.updated_at DESC";
-  let rows = (db.prepare(sql).all(...params) as TodoRow[]).filter((r) =>
-    matchesAnyTag(r.tags, filter.tags),
-  );
-  if (filter.isBlocked != null) {
-    rows = rows.filter((r) => ((r.open_blockers ?? 0) > 0) === filter.isBlocked);
-  }
-  return {
-    total_count: rows.length,
-    offset,
-    limit,
-    todos: rows.slice(offset, offset + limit).map(summarize),
-  };
-}
-
-interface TodoRef {
-  id: number;
-  title: string;
-  status: string;
-}
-
-interface TodoComment {
-  id: number;
-  author: string;
-  body: string;
-  created_at: string;
-}
-
-export interface TodoDetail extends TodoSummary {
-  body: string;
-  created_at: string;
-  completed_at: string | null;
-  blockers: TodoRef[];
-  blocking: TodoRef[];
-  comments?: TodoComment[];
-}
-
-export function getTodoDetail(projectId: number, todoId: number, includeComments: boolean): TodoDetail {
-  const todo = getTodo(projectId, todoId);
-  const blockers = db
-    .prepare(
-      `SELECT t.id, t.title, t.status FROM todo_blockers b
-       JOIN todos t ON t.id = b.blocker_id WHERE b.todo_id = ?`,
-    )
-    .all(todo.id) as TodoRef[];
-  const blocking = db
-    .prepare(
-      `SELECT t.id, t.title, t.status FROM todo_blockers b
-       JOIN todos t ON t.id = b.todo_id WHERE b.blocker_id = ?`,
-    )
-    .all(todo.id) as TodoRef[];
-  const result: TodoDetail = {
-    ...summarize(todo),
-    body: todo.body,
-    created_at: todo.created_at,
-    completed_at: todo.completed_at,
-    blockers,
-    blocking,
-  };
-  if (includeComments) {
-    result.comments = db
-      .prepare(
-        "SELECT id, author, body, created_at FROM todo_comments WHERE todo_id = ? ORDER BY created_at",
-      )
-      .all(todo.id) as TodoComment[];
-  }
-  return result;
+  assertValidTodoCompletionGate(input, loaded.completionGateError);
+  if (!argv) return apply();
+  const gatedInput = { ...input, actorId: currentActor(), argv };
+  await runTodoCompletionGate(gatedInput);
+  assertTodoCompletionGateCurrent(gatedInput, argv);
+  return apply(snapshot);
 }
 
 function transitiveBlockers(startId: number): Set<number> {
@@ -276,8 +152,16 @@ const updateTodo = db.transaction(
       tags?: string[];
       slug?: string;
     },
+    expected?: TodoRow,
   ) => {
-    const todo = getTodo(projectId, todoId);
+    let todo: TodoRow;
+    try {
+      todo = getTodo(projectId, todoId);
+    } catch (error) {
+      if (expected) throw new Error(`[todo_completion_gate:changed] todo ${todoId}; exit unavailable`);
+      throw error;
+    }
+    if (expected) assertTodoSnapshot(todo, expected);
 
     if (todo.archived_at != null && todo.status === "completed" && patch.status && patch.status !== "completed") {
       throw new Error(
@@ -313,8 +197,15 @@ const updateTodo = db.transaction(
   },
 );
 
-const completeTodo = db.transaction((projectId: number, todoId: number, completed: boolean) => {
-  const todo = getTodo(projectId, todoId);
+const completeTodo = db.transaction((projectId: number, todoId: number, completed: boolean, expected?: TodoRow) => {
+  let todo: TodoRow;
+  try {
+    todo = getTodo(projectId, todoId);
+  } catch (error) {
+    if (expected) throw new Error(`[todo_completion_gate:changed] todo ${todoId}; exit unavailable`);
+    throw error;
+  }
+  if (expected) assertTodoSnapshot(todo, expected);
   if (!completed && todo.archived_at != null) {
     throw new Error(`Cannot reopen archived todo ${todo.id}. Unarchive it first.`);
   }
@@ -330,10 +221,7 @@ const completeTodo = db.transaction((projectId: number, todoId: number, complete
       db
         .prepare(
           `${LIVE_DEPENDENTS_SQL}
-             AND NOT EXISTS (
-               SELECT 1 FROM todo_blockers b2 JOIN todos bt ON bt.id = b2.blocker_id
-               WHERE b2.todo_id = t.id AND bt.status != 'completed'
-             )`,
+             AND NOT EXISTS (${OPEN_BLOCKERS_SQL})`,
         )
         .all(todo.id) as { todo_id: number }[]
     ).map((r) => r.todo_id);
@@ -362,7 +250,7 @@ export function registerTodos(server: McpServer): void {
         blocked_by: z.array(idParam).optional(),
         project_id: projectIdParam,
       },
-      outputSchema: { project_id: idParam, todo_id: idParam },
+      outputSchema: { project_id: idParam, todo_id: idParam, slug_truncated: z.string().optional() },
     },
     (args) =>
       run(() => {
@@ -379,13 +267,14 @@ export function registerTodos(server: McpServer): void {
               args.body ?? "",
               args.priority ?? "medium",
               JSON.stringify(args.tags ?? []),
-              args.slug ?? "",
+              args.slug === undefined ? "" : cutAtWordBoundary(args.slug, SLUG_MAX_LEN),
             );
           const todoId = Number(info.lastInsertRowid);
           for (const blockerId of args.blocked_by ?? []) {
             addBlocker.immediate(projectId, todoId, blockerId);
           }
-          return { project_id: projectId, todo_id: todoId };
+          const slug = args.slug === undefined ? undefined : cutAtWordBoundary(args.slug, SLUG_MAX_LEN);
+          return { project_id: projectId, todo_id: todoId, ...(slug !== undefined && slug !== args.slug ? { slug_truncated: slug } : {}) };
         });
       }),
   );
@@ -477,20 +366,43 @@ export function registerTodos(server: McpServer): void {
         slug: slugParam,
         project_id: projectIdParam,
       },
-      outputSchema: { project_id: idParam, todo_id: idParam },
+      outputSchema: { project_id: idParam, todo_id: idParam, slug_truncated: z.string().optional() },
     },
     (args) =>
-      run(() => {
+      run(async () => {
         const projectId = effectiveProjectId(args.project_id);
-        const result = updateTodo.immediate(projectId, args.todo_id, {
+        const storedSlug = args.slug === undefined ? undefined : cutAtWordBoundary(args.slug, SLUG_MAX_LEN);
+        const patch = {
           title: args.title,
           body: args.body,
           priority: args.priority,
           status: args.status,
           tags: args.tags,
-          slug: args.slug,
+          slug: storedSlug,
+        };
+        const receipt = (result: { todo_id: number }) => ({
+          project_id: projectId,
+          ...result,
+          ...(storedSlug !== undefined && storedSlug !== args.slug ? { slug_truncated: storedSlug } : {}),
         });
-        return { project_id: projectId, ...result };
+        if (args.status !== "completed") {
+          const result = updateTodo.immediate(projectId, args.todo_id, patch);
+          return receipt(result);
+        }
+        const snapshot = getTodo(projectId, args.todo_id);
+        if (snapshot.status === "completed") {
+          const loaded = loadProjectYml(resolveProject(projectId).path);
+          const expected = loaded.completionGateError || loaded.config?.completion_gate ? snapshot : undefined;
+          const result = updateTodo.immediate(projectId, args.todo_id, patch, expected);
+          return receipt(result);
+        }
+        const result = await throughCompletionGate(
+          projectId,
+          snapshot,
+          args.title ?? snapshot.title,
+          (expected) => updateTodo.immediate(projectId, args.todo_id, patch, expected),
+        );
+        return receipt(result);
       }),
   );
 
@@ -544,9 +456,26 @@ export function registerTodos(server: McpServer): void {
       },
     },
     (args) =>
-      run(() => {
+      run(async () => {
         const projectId = effectiveProjectId(args.project_id);
-        const result = completeTodo.immediate(projectId, args.todo_id, args.completed ?? true);
+        const completed = args.completed ?? true;
+        if (!completed) {
+          const result = completeTodo.immediate(projectId, args.todo_id, false);
+          return { project_id: projectId, ...result };
+        }
+        const snapshot = getTodo(projectId, args.todo_id);
+        if (snapshot.status === "completed") {
+          const loaded = loadProjectYml(resolveProject(projectId).path);
+          const expected = loaded.completionGateError || loaded.config?.completion_gate ? snapshot : undefined;
+          const result = completeTodo.immediate(projectId, args.todo_id, true, expected);
+          return { project_id: projectId, ...result };
+        }
+        const result = await throughCompletionGate(
+          projectId,
+          snapshot,
+          snapshot.title,
+          (expected) => completeTodo.immediate(projectId, args.todo_id, true, expected),
+        );
         return { project_id: projectId, ...result };
       }),
   );

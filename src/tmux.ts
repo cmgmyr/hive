@@ -12,6 +12,10 @@ import {
   underTestRunner,
 } from "./dataDir.js";
 
+export const TMUX_NOT_INSTALLED_MESSAGE =
+  "tmux is not installed; hive runs the lead and every worker in a tmux pane. " +
+  "Install it with `brew install tmux`, then run hive doctor again.";
+
 export class TmuxError extends Error {
   constructor(
     message: string,
@@ -114,16 +118,17 @@ function refuseIfSharedSocketFromScratchStore(): void {
 
 export function tmux(...args: string[]): string {
   refuseIfSharedSocketFromScratchStore();
-  return tmuxWithin(tmuxTimeoutMs(), ...args);
+  return tmuxWithin(tmuxTimeoutMs(), args);
 }
 
-function tmuxWithin(timeoutMs: number, ...args: string[]): string {
+function tmuxWithin(timeoutMs: number, args: string[], env?: NodeJS.ProcessEnv): string {
   try {
     return execFileSync("tmux", args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: TMUX_MAX_BUFFER,
       timeout: timeoutMs,
+      ...(env ? { env } : {}),
 
       killSignal: "SIGKILL",
     }).replace(/\n$/, "");
@@ -131,7 +136,7 @@ function tmuxWithin(timeoutMs: number, ...args: string[]): string {
     const err = e as { code?: string; stderr?: Buffer | string; message?: string };
     if (err.code === "ENOENT") {
       throw new TmuxError(
-        "tmux is not installed. Install it (brew install tmux) to use agent tools.",
+        TMUX_NOT_INSTALLED_MESSAGE,
         "",
         true,
       );
@@ -151,7 +156,12 @@ function tmuxWithin(timeoutMs: number, ...args: string[]): string {
   }
 }
 
-const NOTHING_THERE = /no server running|error connecting to|no current target|can't find (pane|window|session)/;
+const NOTHING_THERE = /no server running|no current target|can't find (pane|window|session)/;
+
+// A connect failure is an empty server only when the errno proves nothing listens; EACCES/EPERM
+// (a sandboxed caller) and any unreadable reason mean nobody answered.
+const CONNECT_FAILED = /error connecting to .*\(([^)]*)\)\s*$/;
+const NO_LISTENER = /^(No such file or directory|Connection refused)$/;
 
 // "no server running" is tmux ANSWERING that the socket is empty. A missing binary is nobody
 // answering at all, and the two must never read the same to anything that reports a death.
@@ -165,6 +175,8 @@ export function tmuxSaysNothingThere(e: unknown): boolean {
   if (!(e instanceof TmuxError)) return false;
 
   if (e.notInstalled) return true;
+  const reason = CONNECT_FAILED.exec(e.stderr)?.[1];
+  if (reason !== undefined) return NO_LISTENER.test(reason);
   return NOTHING_THERE.test(e.stderr);
 }
 
@@ -190,7 +202,7 @@ export function crossServerRefusal(action: string): Error {
   );
 }
 
-export type SessionStart = { created: true; pane: string; window: string } | { created: false };
+export type SessionStart = { created: true; pane: string; window: string; pid: string } | { created: false };
 
 export type InitialPane = { envFlags: string[]; command: string } | { bare: true };
 
@@ -213,16 +225,20 @@ function unsetAtSessionScope(name: string, envFlags: string[]): void {
   }
 }
 
+// The pid is read from the creating call because tmux 3.8 reports an empty #{pane_pid} once a pane's
+// process has exited, so a later list-panes can lose the race against a command that dies at once.
+export const CREATED_PANE_FORMAT = "#{pane_id}\t#{session_name}:#{window_id}\t#{pane_pid}";
+
 export function ensureSession(name: string, cwd: string, initial: InitialPane): SessionStart {
   if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   try {
-    const [pane, window] = tmux(
-      "new-session", "-d", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}", "-s", name, "-c", cwd,
+    const [pane, window, pid = ""] = tmuxWithClientPath(paneEnvPath(),
+      "new-session", "-d", "-P", "-F", CREATED_PANE_FORMAT, "-s", name, "-c", cwd,
       ...(initial && "command" in initial ? [...initial.envFlags, initial.command] : []),
     ).split("\t");
     if (initial && "command" in initial) unsetAtSessionScope(name, initial.envFlags);
-    return { created: true, pane, window };
+    return { created: true, pane, window, pid };
   } catch (e) {
     if (!isDuplicateSession(e)) throw e;
     return { created: false };
@@ -394,7 +410,7 @@ export function orphanScratchServers(options: { minAgeMs?: number; budgetMs?: nu
 
       tmuxWithin(
         Math.min(ORPHAN_PROBE_TIMEOUT_MS, tmuxTimeoutMs()),
-        "-S", candidate.socket, "list-sessions", "-F", "#{session_name}",
+        ["-S", candidate.socket, "list-sessions", "-F", "#{session_name}"],
       );
       state = "live";
     } catch (e) {
@@ -442,7 +458,7 @@ export function targetLiveProbe(target: string): PaneProbe {
     const rows = tmux("list-panes", "-t", target, "-F", "#{pane_id} #{pane_pid}")
       .split("\n")
       .map((line) => line.split(" "));
-    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] ?? null) : null;
+    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] || null) : null;
     return { live: true, pid };
   } catch (e) {
     return { live: tmuxSaysNothingThere(e) ? false : null, pid: null };
@@ -861,15 +877,15 @@ export function createWindow(
 
   detach = false,
   retainOnExit = false,
-): { pane: string; window: string } {
-  const created = tmux(
-    "new-window", ...(detach ? ["-d"] : []), "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
+): { pane: string; window: string; pid: string } {
+  const created = tmuxWithClientPath(paneEnvPath(),
+    "new-window", ...(detach ? ["-d"] : []), "-P", "-F", CREATED_PANE_FORMAT,
     "-t", `=${session}`, "-n", windowName, "-c", cwd, ...envFlags, command,
     ...(retainOnExit ? retainOnExitArgs(`=${session}:${windowName}`) : []),
   );
-  const [pane, window] = created.split("\t");
+  const [pane, window, pid = ""] = created.split("\t");
   configureHiveWindow(window, true, projectId);
-  return { pane, window };
+  return { pane, window, pid };
 }
 
 function viewSessionChain(session: string, view: string): string[] {
@@ -1046,7 +1062,12 @@ function leadingRunIsFaint(s: string): boolean {
       faint = false;
       continue;
     }
-    for (const p of params) {
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (p === "38" || p === "48" || p === "58") {
+        i += params[i + 1] === "5" ? 2 : params[i + 1] === "2" ? 4 : 0;
+        continue;
+      }
       if (p === "0") faint = false;
       else if (p === "2") faint = true;
       else if (p === "22") faint = false;
@@ -1133,17 +1154,53 @@ function classifyInputBox(rows: string[], promptRowIndex: number, boxBottom: num
   return { state: text === "" ? "empty" : dim ? "ghost" : "pending", text };
 }
 
-export function inputBoxState(target: string): InputBoxState | null {
+export interface InputBoxSnapshot {
+  box: InputBoxState | null;
+  rows?: string[];
+  promptSgr?: string;
+}
+
+const SNAPSHOT_ROWS = 10;
+const SNAPSHOT_ROW_CHARS = 120;
+
+const snapshotRow = (row: string): string =>
+  stripControlBytes(stripSgr(row))
+    .trimEnd()
+    .replace(/─{4,}/g, (run) => `─×${run.length}`)
+    .slice(0, SNAPSHOT_ROW_CHARS);
+
+function snapshotRows(rows: string[], anchor: InputBoxAnchor | null): string[] {
+  if (anchor === null) {
+    return rows.map(snapshotRow).filter((row) => row !== "").slice(-SNAPSHOT_ROWS);
+  }
+  return rows.slice(anchor.top, anchor.bottom + 1).map(snapshotRow).slice(0, SNAPSHOT_ROWS);
+}
+
+function promptSgrOf(rows: string[], anchor: InputBoxAnchor | null): string {
+  if (anchor === null || anchor.prompt === null) return "";
+  const row = rows[anchor.prompt];
+  const after = row.slice(row.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
+  return (/^(?:\x1b\[[0-9;]*m)*/.exec(after)?.[0] ?? "").replace(/\x1b/g, "").slice(0, 60);
+}
+
+export function inputBoxSnapshot(target: string): InputBoxSnapshot | null {
   try {
     const raw = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`);
     const rows = raw.split("\n");
-    const box = findInputBox(rows);
-    if (box === null) return null;
-    return box.prompt === null ? { state: "unknown", text: "" } : classifyInputBox(rows, box.prompt, box.bottom);
+    const anchor = findInputBox(rows);
+    const box =
+      anchor === null
+        ? null
+        : anchor.prompt === null
+          ? { state: "unknown" as const, text: "" }
+          : classifyInputBox(rows, anchor.prompt, anchor.bottom);
+    return { box, rows: snapshotRows(rows, anchor), promptSgr: promptSgrOf(rows, anchor) };
   } catch {
     return null;
   }
 }
+
+export const inputBoxState = (target: string): InputBoxState | null => inputBoxSnapshot(target)?.box ?? null;
 
 const NOISE_ROW = /^[\s\u2500-\u257F\u2580-\u259F\u2800-\u28FF]*$/;
 const FOOTER_KEEP =
@@ -1673,4 +1730,27 @@ export async function sendText(
     beforePaneWrite?.();
     tmux("send-keys", "-t", target, "Enter");
   }
+}
+
+export function tmuxWithClientPath(path: string | null, ...args: string[]): string {
+  if (path === null && process.env.npm_command !== "exec") return tmux(...args);
+
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (path !== null) env.PATH = path;
+  if (process.env.npm_command === "exec") {
+    for (const key of Object.keys(env)) {
+      if (/^npm_/i.test(key) || key === "_" || key === "INIT_CWD" || key === "NODE") delete env[key];
+    }
+  }
+  refuseIfSharedSocketFromScratchStore();
+  return tmuxWithin(tmuxTimeoutMs(), args, env);
+}
+
+export function paneEnvPath(): string | null {
+  if (process.env.npm_command !== "exec" || process.env.PATH === undefined) return null;
+
+  const entries = process.env.PATH.split(":");
+  // npm exec's first node-gyp-bin entry closes its injected PATH prefix; preserve everything after it.
+  const boundary = entries.findIndex((entry) => entry.endsWith("/@npmcli/run-script/lib/node-gyp-bin"));
+  return boundary === -1 ? null : entries.slice(boundary + 1).join(":");
 }

@@ -8,6 +8,7 @@ import { clearHiveEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead first message tests");
 clearHiveEnv();
+delete process.env.CLAUDE_CODE_AUTO_CONNECT_IDE;
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
@@ -77,6 +78,7 @@ describe("hive lead passes the resolved first message on claude's command line",
     assert.equal(positional(argv), null);
     assert.equal(argv.includes("--"), false);
     assert.equal(env.HIVE_LEAD_FIRST_MESSAGE_SHA ?? "", "");
+    assert.equal("CLAUDE_CODE_AUTO_CONNECT_IDE" in env, false);
   });
 
   it("passes no prompt and sets no marker for an empty string, even over a global message", async () => {

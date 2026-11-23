@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { JsonRpcClient } from "./mcp-client.mjs";
 
 export const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -262,6 +263,49 @@ function traceTmuxServer(suite, socket) {
   }
 }
 
+const KILL_VERBS = new Set(["kill-session", "kill-window", "kill-pane"]);
+const EMPTIED_SERVER_EXIT_BOUND_MS = 5000;
+
+// tmux returns from a kill before an emptied server has exited, and a new-session that connects in
+// that window fails "server exited unexpectedly". Returns the server pid only when it is now exiting.
+function killReportingEmptiedServer(socket, killArgs) {
+  const lines = execFileSync(
+    "tmux",
+    [
+      "-S", socket, "display-message", "-p", "#{pid}",
+      ";", ...killArgs,
+      ";", "list-sessions", "-F", "#{session_name}",
+      ";", "show-options", "-sv", "exit-empty",
+    ],
+    { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] },
+  )
+    .split("\n")
+    .filter(Boolean);
+  const pid = Number(lines[0]);
+  const exitEmpty = lines.at(-1);
+  const remaining = lines.slice(1, -1);
+  return remaining.length === 0 && exitEmpty === "on" && Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function awaitEmptiedServerExit(socket, pid, who) {
+  const deadline = Date.now() + EMPTIED_SERVER_EXIT_BOUND_MS;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if (e?.code === "ESRCH" || e?.code === "EPERM") return;
+      throw e;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${who}: the kill left the tmux server on ${socket} with no sessions, and its process ${pid} had not exited ` +
+          `after ${EMPTIED_SERVER_EXIT_BOUND_MS}ms; a new-session now would race that exit ("server exited unexpectedly")`,
+      );
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+
 export function isolateTmux(suite) {
   const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
   process.env.TMUX_TMPDIR = tmuxTmp;
@@ -269,6 +313,8 @@ export function isolateTmux(suite) {
   delete process.env.TMUX_PANE;
 
   const socket = tmuxSocketUnder(tmuxTmp);
+  // `tmux -S` skips the tmux-<uid> mkdir that a bare call makes, so tmux() as a file's first call needs it.
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
 
   recordScratchTmuxSocket(socket);
 
@@ -368,15 +414,13 @@ export function isolateTmux(suite) {
       return;
     }
     for (const session of sessions) {
+      let emptied = null;
       try {
-        execFileSync("tmux", ["-S", target, "kill-session", "-t", `=${session}`], {
-          stdio: "ignore",
-          timeout: 5000,
-          killSignal: "SIGKILL",
-        });
+        emptied = killReportingEmptiedServer(target, ["kill-session", "-t", `=${session}`]);
       } catch {
 
       }
+      if (emptied) awaitEmptiedServerExit(target, emptied, `${suite}: cleanup(${session})`);
     }
   };
   return { hasTmux, cleanup };
@@ -465,6 +509,11 @@ export function tmux(...args) {
   if (!socket) {
     throw new Error(`tmux(): cannot resolve a reachable tmux socket (TMUX_TMPDIR=${process.env.TMUX_TMPDIR ?? "unset"})`);
   }
+  if (KILL_VERBS.has(args[0])) {
+    const emptied = killReportingEmptiedServer(socket, args);
+    if (emptied) awaitEmptiedServerExit(socket, emptied, `tmux(${args.join(" ")})`);
+    return "";
+  }
   return execFileSync("tmux", ["-S", socket, ...args], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" })
     .replace(/\n$/, "");
 }
@@ -493,9 +542,9 @@ export function windowFor(session, projectId) {
   return match[0];
 }
 
-export class McpClient {
+export class McpClient extends JsonRpcClient {
   constructor({ cwd, dataDir, env = {}, server = SERVER }) {
-    this.child = spawn("node", [server], {
+    super("node", [server], {
       cwd,
       env: {
         ...baseEnv(),
@@ -503,72 +552,8 @@ export class McpClient {
         HIVE_AUTO_ATTACH: "0",
         ...env,
       },
-      stdio: ["pipe", "pipe", "inherit"],
-    });
-    this.nextId = 1;
-    this.pending = new Map();
-
-    this.child.stdout.setEncoding("utf8");
-    let buffer = "";
-    this.child.stdout.on("data", (chunk) => {
-      buffer += chunk;
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        const resolve = this.pending.get(msg.id);
-        if (resolve) {
-          this.pending.delete(msg.id);
-          resolve(msg);
-        }
-      }
-    });
-  }
-
-  send(payload) {
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
-  }
-
-  request(method, params) {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Timed out waiting for ${method} (id ${id})`));
-      }, 15000);
-      this.pending.set(id, (msg) => {
-        clearTimeout(timer);
-        resolve(msg);
-      });
-      this.send({ jsonrpc: "2.0", id, method, params });
-    });
-  }
-
-  async start() {
-    await this.request("initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
       clientInfo: { name: "hive-test", version: "0" },
     });
-    this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-  }
-
-  async call(name, args = {}) {
-    const msg = await this.request("tools/call", { name, arguments: args });
-    if (msg.error) throw new Error(msg.error.message);
-    const text = msg.result?.content?.[0]?.text ?? "";
-    if (msg.result?.isError) throw new Error(text);
-    return text ? JSON.parse(text) : null;
-  }
-
-  async close() {
-    this.child.stdin.end();
-    const exited = new Promise((resolve) => this.child.once("exit", resolve));
-    const timeout = new Promise((resolve) => setTimeout(resolve, 3000).unref());
-    await Promise.race([exited, timeout]);
-    if (this.child.exitCode == null) this.child.kill("SIGKILL");
   }
 }
 
@@ -817,13 +802,25 @@ export function repaintPaneAsSameWorker(db, target, command) {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function until(predicate, timeoutMs = 3000, stepMs = 25) {
+async function waitUntil(predicate, timeoutMs, stepMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await predicate()) return true;
     if (Date.now() >= deadline) return false;
     await sleep(stepMs);
   }
+}
+
+export async function until(predicate, timeoutMs = 3000, stepMs = 25, message) {
+  if (!(await waitUntil(predicate, timeoutMs, stepMs))) {
+    const timeoutMessage = message ?? predicate.toString().slice(0, 200);
+    assert.fail(`Timed out after ${timeoutMs}ms waiting for ${timeoutMessage}`);
+  }
+  return true;
+}
+
+export async function untilOrTimeout(predicate, timeoutMs = 3000, stepMs = 25) {
+  return waitUntil(predicate, timeoutMs, stepMs);
 }
 
 export function withEnv(vars, fn) {

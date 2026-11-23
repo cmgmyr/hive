@@ -4,7 +4,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, McpClient, paneField, resolvedTmuxSocket, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, McpClient, paneField, resolvedTmuxSocket, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen scope tests");
 after(() => cleanup("qscope-alpha"));
@@ -13,6 +13,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { QUEEN_REACH, QUEEN_REFUSAL } = await import("../dist/context.js");
 migrate();
 
@@ -143,7 +144,140 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
 
   it("refuses agent_send to another project's worker", async () => {
     const text = await refusal(queenMcp, "agent_send", { agent_id: alphaWorker.id, text: "hi", project_id: alpha.id });
-    assert.match(text, new RegExp(`^${QUEEN_REFUSAL}:.*recipient must be that project's running lead`));
+    assert.match(text, new RegExp(`^${QUEEN_REFUSAL}:.*Agent ${alphaWorker.id} \\(\"impl\"\\) is kind "agent", not a lead`));
+    const missing = await refusal(queenMcp, "agent_send", { name: "missing-lead", text: "hi", project_id: alpha.id });
+    assert.match(missing, /recipient "missing-lead" could not be resolved/);
+  });
+
+  it("queen wake_set and agent_send accept a string id and an actor id for the target lead", async () => {
+    for (const ref of [alphaLead.id, String(alphaLead.id), alphaLead.actorId, "lead", "LEAD", "lea"]) {
+      const wake = await queenMcp.call("wake_set", {
+        delay_seconds: 3600,
+        body: "check in",
+        deliver_to: ref,
+        project_id: alpha.id,
+      });
+      assert.equal(wake.deliver_to, alphaLead.actorId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(wake.wake_id);
+
+      const idle = await queenMcp.call("wake_when_idle", {
+        agents: [alphaWorker.id],
+        body: "check in after worker idle",
+        deliver_to: ref,
+        project_id: alpha.id,
+      });
+      assert.equal(idle.deliver_to, alphaLead.actorId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(idle.wake_id);
+
+      const recipient = typeof ref === "number" ? { agent_id: ref } : { name: ref };
+      const sent = await queenMcp.call("agent_send", { ...recipient, text: "status?", project_id: alpha.id });
+      assert.equal(sent.agent_id, alphaLead.id);
+    }
+  });
+
+  it("accepts the newer live lead by id and name when an older running lead is stale", async () => {
+    const target = project("stale-lead-target", join(dirs.tmp, "stale-lead-target"));
+    agentRow(target.id, { kind: "lead", name: "stale-lead" });
+    const pane = execFileSync(
+      "tmux",
+      ["new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "=qscope-alpha", "sleep", "600"],
+      { encoding: "utf8" },
+    ).trim();
+    const liveLead = agentRow(target.id, {
+      kind: "lead",
+      name: "newer-lead",
+      pane,
+      socket: resolvedTmuxSocket(),
+    });
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(paneField(pane, "#{pane_pid}"), liveLead.id);
+
+    for (const ref of [liveLead.id, "newer-lead"]) {
+      const wake = await queenMcp.call("wake_set", {
+        delay_seconds: 3600,
+        body: "check the newer lead",
+        deliver_to: ref,
+        project_id: target.id,
+      });
+      assert.equal(wake.deliver_to, liveLead.actorId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(wake.wake_id);
+
+      const recipient = typeof ref === "number" ? { agent_id: ref } : { name: ref };
+      const sent = await queenMcp.call("agent_send", {
+        ...recipient,
+        text: "status?",
+        project_id: target.id,
+      });
+      assert.equal(sent.agent_id, liveLead.id);
+    }
+  });
+
+  it("refuses wake recipients that resolve to a worker, closed or unowned lead, or no row", async () => {
+    const closed = agentRow(alpha.id, { kind: "lead", name: "closed-lead", status: "closed" });
+    const gone = agentRow(alpha.id, { kind: "lead", name: "gone-lead", pane: "%gone" });
+    const liveLead = db.prepare("SELECT tmux_target FROM agents WHERE id = ?").get(alphaLead.id);
+    const reissued = agentRow(alpha.id, { kind: "lead", name: "reissued-lead", pane: liveLead.tmux_target, socket: resolvedTmuxSocket() });
+    const unknown = agentRow(alpha.id, { kind: "lead", name: "unknown-lead", pane: liveLead.tmux_target, socket: resolvedTmuxSocket() });
+    db.prepare("UPDATE agents SET pane_pid = '0' WHERE id = ?").run(reissued.id);
+    db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(unknown.id);
+    const refusedTargets = [
+      [alphaWorker.id, /kind "agent", not a lead/],
+      [closed.id, /is closed, not running/],
+      [gone.id, /ownership: gone/],
+      [reissued.id, /ownership: reissued/],
+      [unknown.id, /ownership: unknown/],
+      ["missing-lead", /could not be resolved: No running agent matching/],
+    ];
+    for (const [ref, expected] of refusedTargets) {
+      const text = await refusal(queenMcp, "wake_set", {
+        delay_seconds: 3600,
+        body: "must be refused",
+        deliver_to: ref,
+        project_id: alpha.id,
+      });
+      assert.match(text, new RegExp(`^${QUEEN_REFUSAL}:`));
+      assert.match(text, expected);
+    }
+
+    const rows = (await queenMcp.call("queen_audit_list", { project_id: alpha.id, limit: 100 })).entries;
+    const refusalRow = rows.find((row) => row.operation === "wake_set" && row.outcome === "refused" && row.problem.includes('kind "agent"'));
+    assert.ok(refusalRow, "queen_audit_list must expose the refusal and its problem");
+    assert.match(refusalRow.summary, /^refused:/);
+
+    const idleRefusal = await refusal(queenMcp, "wake_when_idle", {
+      agents: [alphaWorker.id],
+      body: "must be refused",
+      deliver_to: alphaWorker.id,
+      project_id: alpha.id,
+    });
+    assert.match(idleRefusal, /kind "agent", not a lead/);
+    const idleMissing = await refusal(queenMcp, "wake_when_idle", {
+      agents: [alphaWorker.id],
+      body: "must be refused",
+      deliver_to: "missing-lead",
+      project_id: alpha.id,
+    });
+    assert.match(idleMissing, /recipient "missing-lead" could not be resolved/);
+  });
+
+  it("preserves the queen refusal when its audit insert fails", async () => {
+    const expected = await refusal(queenMcp, "wake_when_idle", {
+      scope: "project",
+      deliver_to: alphaLead.id,
+      body: "refusal still returns",
+      project_id: alpha.id,
+    });
+    db.exec("CREATE TRIGGER break_queen_refusal_audit BEFORE INSERT ON queen_audit BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+    try {
+      const text = await refusal(queenMcp, "wake_when_idle", {
+        scope: "project",
+        deliver_to: alphaLead.id,
+        body: "refusal still returns",
+        project_id: alpha.id,
+      });
+      assert.equal(text, expected);
+    } finally {
+      db.exec("DROP TRIGGER break_queen_refusal_audit");
+    }
   });
 
   it("sets, edits and cancels its own wake addressed to another project's lead", async () => {
@@ -163,6 +297,26 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
   it("refuses a foreign wake with no deliver_to, since the default delivers to the queen's own pane", async () => {
     const text = await refusal(queenMcp, "wake_set", { delay_seconds: 60, body: "x", project_id: alpha.id });
     assert.match(text, new RegExp(`^${QUEEN_REFUSAL}:.*deliver_to must name that project's running lead`));
+    const emptyLeadProject = project("no-wake-lead", join(dirs.tmp, "no-wake-lead"));
+    const noLead = await refusal(queenMcp, "wake_set", {
+      delay_seconds: 60,
+      body: "x",
+      deliver_to: "lead",
+      project_id: emptyLeadProject.id,
+    });
+    assert.match(noLead, /that project has no running lead to address/);
+  });
+
+  it("refuses agent_send without a recipient or a running lead", async () => {
+    const noRecipient = await refusal(queenMcp, "agent_send", { text: "x", project_id: alpha.id });
+    assert.match(noRecipient, /recipient must name that project's running lead/);
+    const emptyLeadProject = project("no-send-lead", join(dirs.tmp, "no-send-lead"));
+    const noLead = await refusal(queenMcp, "agent_send", {
+      name: "lead",
+      text: "x",
+      project_id: emptyLeadProject.id,
+    });
+    assert.match(noLead, /that project has no running lead to address/);
   });
 
   it("refuses a standing watch in another project, even one delivered to its lead", async () => {
@@ -221,6 +375,7 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     kv_delete: () => ({ key: "k" }),
     lease_acquire: () => ({ key: "file:x", ttl_seconds: 60 }),
     lease_release: () => ({ key: "file:x" }),
+    agent_fork: () => ({ agent_id: alphaWorker.id, name: "forked" }),
     agent_spawn: () => ({ name: "intruder" }),
     agent_resume: () => ({ name: "impl" }),
     agent_park: () => ({ name: "impl" }),
@@ -228,17 +383,38 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     agent_close: () => ({ name: "impl" }),
   };
 
+  const noProjectOverride = {
+    question_ask: () => ({ kind: "free_text", question: "Which name?", header: "Name", default_answer: "x" }),
+    question_get: () => ({ question_id: 1 }),
+    question_list: () => ({}),
+    question_update: () => ({ question_id: 1, state: "withdrawn" }),
+    question_answer: () => ({ question_id: 1, answer: "x" }),
+  };
+
   it("refuses every other write into another project by name, and changes nothing there", async () => {
     const reachRefused = Object.entries(QUEEN_REACH)
       .filter(([op, reach]) => reach === "home" && !op.startsWith("hive "))
       .map(([op]) => op)
       .sort();
-    assert.deepEqual(Object.keys(refusedForeign).sort(), reachRefused, "every home-only tool needs a row here");
+    assert.deepEqual(
+      [...Object.keys(refusedForeign), ...Object.keys(noProjectOverride)].sort(),
+      reachRefused,
+      "every home-only tool needs a row here",
+    );
 
     const before = alphaState();
     for (const [tool, args] of Object.entries(refusedForeign)) {
       const text = await refusal(queenMcp, tool, { ...args(), project_id: alpha.id });
       assert.match(text, new RegExp(`^${QUEEN_REFUSAL}: the queen cannot run ${tool} in project ${alpha.id}`), tool);
+    }
+    assert.deepEqual(alphaState(), before);
+  });
+
+  it("gives a question tool no way to name another project, so the queen's foreign call is refused by the schema", async () => {
+    const before = alphaState();
+    for (const [tool, args] of Object.entries(noProjectOverride)) {
+      const text = await refusal(queenMcp, tool, { ...args(), project_id: alpha.id });
+      assert.match(text, /Unrecognized key: "project_id"/, tool);
     }
     assert.deepEqual(alphaState(), before);
   });
@@ -290,6 +466,9 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
       await mcp.call("kv_set", { key: "from-beta", value: 1, project_id: alpha.id });
       assert.ok(db.prepare("SELECT 1 FROM kv WHERE project_id = ? AND key = 'from-beta'").get(alpha.id));
       db.prepare("DELETE FROM kv WHERE project_id = ? AND key = 'from-beta'").run(alpha.id);
+      const wake = await mcp.call("wake_set", { delay_seconds: 3600, body: "ordinary lead", deliver_to: alphaLead.id, project_id: alpha.id });
+      assert.equal(wake.deliver_to, alphaLead.actorId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(wake.wake_id);
     } finally {
       await mcp.close();
     }
