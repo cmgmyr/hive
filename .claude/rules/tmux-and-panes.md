@@ -165,6 +165,8 @@ strands what survives, unsubmitted, with every receipt reporting success.
 
 Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle pane holds every wake forever. `unknown` must not either: a hold that silently starts firing on every unrecognised screen is worse than a detector that silently stops.
 
+**A leading Claude IDE chip `[⧉ ...]` is prompt chrome; identify it by the anchored glyph, never by a generic bracket or placeholder-content guess. Classify the SGR state after it, and leave every non-match unchanged.**
+
 **`agent_send`'s text path and `agent_rename` REFUSE on the same condition.**
 
 **`submit=false` is exempt, and that is a decision, not a gap.** The destructive event is the Enter, not the paste: a submitted merge sends a human's half-written sentence as a message he never finished and cannot take back, while `submit=false` leaves characters in a box where they are visible and editable - the `keys` category, drive-this-TUI-on-purpose, not inject-a-user-turn.
