@@ -111,6 +111,7 @@ describe("hive project mv", () => {
     const preview = cli(old, [next], previewEnv);
     const output = assertOk(preview);
     assert.match(output, /Preview only/);
+    assert.match(output, /Refusals: none found during preflight\./);
     assert.match(output, /exit Claude Code and Codex/);
     assert.match(output, /codex resume --all/);
     assert.ok(existsSync(old));
@@ -218,7 +219,7 @@ describe("hive project mv", () => {
     agent(id, { cwd: old, status: "running", kind: "lead" });
     result = cli(old, [next, "--apply"]);
     assert.notEqual(result.status, 0);
-    assert.match(result.stdout, /running hive agents/);
+    assert.match(result.stdout, /has running hive agents: fixture \(lead, \d+\); close every agent before applying a move\./);
     assert.ok(existsSync(old));
     assert.equal(existsSync(next), false);
     assert.equal(db.prepare("SELECT path FROM projects WHERE id = ?").get(id).path, realpathSync(old));
