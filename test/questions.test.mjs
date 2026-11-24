@@ -421,10 +421,11 @@ describe("question tools, over real MCP", () => {
     await refusal(asker, "question_update", { question_id: id });
   });
 
-  it("update merges and revalidates the whole payload", { skip }, async () => {
+  it("question_update replaces a mismatched choice default and revalidates the whole payload", { skip }, async () => {
     const id = (await asker.call("question_ask", choice({ question: "Merge validation probe wording" }))).question_id;
     const replacement = await asker.call("question_update", { question_id: id, default_answer: "Opt1" });
     assert.deepEqual(replacement.default_answer_replaced, { given: "Opt1", stored: "Opt0" });
+    assert.equal((await asker.call("question_get", { question_id: id })).default_answer, "Opt0");
     const cut = await asker.call("question_update", { question_id: id, header: "thirteen char" });
     assert.equal(cut.header_truncated, "thirteen");
     await refusal(asker, "question_update", { question_id: id, options: opts(1) });
