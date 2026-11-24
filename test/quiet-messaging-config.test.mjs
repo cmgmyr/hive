@@ -129,8 +129,8 @@ describe("hive lead launches a claude lead with the settings its key selects", (
     const onCommand = leadRow(db, on.id).command;
     const offCommand = leadRow(db, off.id).command;
     assert.ok(onCommand.includes(join(dirs.dataDir, `lead-${on.id}-hooks.json`)), onCommand);
-    assert.ok(offCommand.includes(join(dirs.dataDir, "hooks.json")), offCommand);
     assert.doesNotMatch(offCommand, /lead-\d+-hooks\.json/, offCommand);
+    assert.ok(offCommand.includes(join(dirs.dataDir, "hooks.json")), offCommand);
     assert.equal(readJson(join(dirs.dataDir, `lead-${on.id}-hooks.json`)).crossSessionInbound, "accept");
     assert.equal(existsSync(join(dirs.dataDir, `lead-${off.id}-hooks.json`)), false);
   });
