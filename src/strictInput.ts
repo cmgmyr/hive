@@ -14,10 +14,13 @@ const UNKNOWN_KEY_ALIASES: Record<string, string[]> = {
   body: ["content"],
 };
 
-export function unknownKeyHint(keys: string[], shapeKeys: string[]): string | undefined {
+export function unknownKeyHint(keys: string[], shapeKeys: string[], suppliedKeys: string[] = []): string | undefined {
+  const supplied = new Set(suppliedKeys);
   const suggestions = keys.flatMap((key) => {
     const matches = shapeKeys.filter(
-      (candidate) => candidate.endsWith(`_${key}`) || candidate === `${key}s` || UNKNOWN_KEY_ALIASES[key]?.includes(candidate),
+      (candidate) =>
+        !supplied.has(candidate) &&
+        (candidate.endsWith(`_${key}`) || candidate === `${key}s` || UNKNOWN_KEY_ALIASES[key]?.includes(candidate)),
     );
     return matches.length === 0 ? [] : [`${key}: did you mean ${matches.map((match) => `\"${match}\"`).join(" or ")}?`];
   });
@@ -37,7 +40,8 @@ function strictSchemaFor(toolName: string, inputSchema: unknown): unknown {
   return z.strictObject(shape, {
     error: (issue) => {
       if (issue.code !== "unrecognized_keys") return undefined;
-      const hint = unknownKeyHint(issue.keys, Object.keys(shape));
+      const suppliedKeys = typeof issue.input === "object" && issue.input !== null ? Object.keys(issue.input) : [];
+      const hint = unknownKeyHint(issue.keys, Object.keys(shape), suppliedKeys);
       return hint === undefined ? undefined : hint;
     },
   });
