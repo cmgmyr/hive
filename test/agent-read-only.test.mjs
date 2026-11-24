@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { after, before, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { isolateTmux, liveAgentRow, McpClient, scratchDirs, scratchGit, until } from "./helpers.mjs";
@@ -11,7 +12,7 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { sessionName } = await import("../dist/tmux.js");
 const { codexLaunchArgs } = await import("../dist/codexHome.js");
-const { readOnlyDenyWrite, readOnlyTmpDir } = await import("../dist/hooks.js");
+const { ensureWorkerHooksFile, readOnlyDenyWrite, readOnlyTmpDir } = await import("../dist/hooks.js");
 scratchGit(dirs.projectDir, "init", "-q");
 scratchGit(dirs.projectDir, "commit", "-q", "--allow-empty", "-m", "root");
 writeFileSync(join(dirs.projectDir, "hive.yml"), "agents: [claude, codex]\n");
@@ -50,6 +51,10 @@ for (const harness of ["claude", "codex"]) {
     let args = await argv();
     await liveAgentRow(mcp, `sealed-${harness}`);
     assert.equal((await mcp.call("agent_status", { agent_id: receipt.agent_id })).read_only, true);
+    if (harness === "claude") {
+      chmodSync(readOnlyTmpDir(receipt.agent_id), 0o755);
+      ensureWorkerHooksFile(receipt.agent_id, { includePostToolUse: false, readOnly: true });
+    }
     const check = () => {
       if (harness === "codex") {
         assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
@@ -69,7 +74,7 @@ for (const harness of ["claude", "codex"]) {
         });
         assert.equal(settings.env.CLAUDE_CODE_TMPDIR, readOnlyTmpDir(receipt.agent_id));
         assert.equal(settings.env.CLAUDE_CODE_TMPDIR, `/tmp/hive-${process.getuid()}/w${receipt.agent_id}`);
-        assert.equal(settings.env.CLAUDE_CODE_TMPDIR.startsWith(fakeHome), false);
+        assert.equal(settings.env.CLAUDE_CODE_TMPDIR.startsWith(homedir()), false);
         assert.equal(statSync(settings.env.CLAUDE_CODE_TMPDIR).mode & 0o777, 0o700);
       }
     };
