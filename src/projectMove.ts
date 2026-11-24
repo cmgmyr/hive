@@ -38,6 +38,7 @@ type MovePlan = {
   worktreeBackups: FileChange[];
   codexConfigFiles: string[];
   recovery: string;
+  running: Array<{ id: number; name: string; kind: string }>;
 };
 
 const within = (path: string, root: string): boolean => path === root || path.startsWith(`${root}${sep}`);
@@ -520,7 +521,6 @@ function planMove(project: Project, targetPath: string): MovePlan {
   if (newExists && !lstatSync(newRoot).isDirectory()) throw new Error(`Destination checkout is not a directory: ${newRoot}`);
   assertNoStrandedRegistrations(project, oldRoot, newRoot);
   const running = db.prepare("SELECT id, name, kind FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id").all(project.id) as Array<{ id: number; name: string; kind: string }>;
-  if (running.length) throw new Error(`Project ${project.id} has running hive agents: ${running.map((row) => `${row.name} (${row.kind}, ${row.id})`).join(", ")}; close every agent before applying a move.`);
 
   const worktreeRootPath = oldExists ? oldRoot : newRoot;
   const worktree = sameRoot ? null : worktreeList(worktreeRootPath);
@@ -539,7 +539,7 @@ function planMove(project: Project, targetPath: string): MovePlan {
     if (change) fileChanges.push(change);
   }
   const worktreeBackups = worktree ? gitBackupSnapshots(worktree, oldRoot, newRoot) : [];
-  return { project, oldRoot, newRoot, sameRoot, renameCheckout: oldExists && !sameRoot, claudeDirs, fileChanges, worktree, worktreeBackups, codexConfigFiles: configs, recovery: recoveryText(newRoot, project.id) };
+  return { project, oldRoot, newRoot, sameRoot, renameCheckout: oldExists && !sameRoot, claudeDirs, fileChanges, worktree, worktreeBackups, codexConfigFiles: configs, recovery: recoveryText(newRoot, project.id), running };
 }
 
 function printPlan(plan: MovePlan): void {
@@ -550,7 +550,9 @@ function printPlan(plan: MovePlan): void {
   console.log(claudeRenames.length ? `Claude storage: ${claudeRenames.map((item) => `${item.source} -> ${item.target}`).join(", ")}` : "Claude storage: no directory rename needed.");
   console.log(plan.fileChanges.length ? `Config files to update: ${plan.fileChanges.map((item) => item.path).join(", ")}` : "Config files: no path keys to update.");
   console.log(`Claude config: ${join(resolve(process.env.CLAUDE_CONFIG_DIR || homedir()), ".claude.json")}`);
-  console.log("Refusals: none found during preflight.");
+  if (plan.running.length) {
+    console.log(`Running hive agents: ${plan.running.map((row) => `${row.name} (${row.kind}, ${row.id})`).join(", ")}; --apply refuses until every agent is closed.`);
+  } else console.log("Refusals: none found during preflight.");
   console.log(`Codex guidance: Use codex resume --all to find sessions saved under the old path.`);
   console.log("Precondition: exit Claude Code and Codex before applying; hive does not detect or stop them.");
   console.log(`Recovery command: ${plan.recovery}`);
@@ -672,6 +674,9 @@ export async function cmdProjectMove(argv: string[]): Promise<void> {
   const { target, options } = parseArgs(argv);
   const project = selectProject(options.projectId);
   const plan = planMove(project, target);
+  if (options.apply && plan.running.length) {
+    throw new Error(`Project ${plan.project.id} has running hive agents: ${plan.running.map((row) => `${row.name} (${row.kind}, ${row.id})`).join(", ")}; close every agent before applying a move.`);
+  }
   printPlan(plan);
   if (!options.apply) {
     console.log("Preview only; no files, directories or store rows were changed. Pass --apply to continue.");

@@ -224,6 +224,23 @@ describe("hive project mv", () => {
     assert.equal(db.prepare("SELECT path FROM projects WHERE id = ?").get(id).path, realpathSync(old));
   });
 
+  it("project mv preview with a running agent prints the plan and names the agent", () => {
+    const old = join(root, "running-preview-old");
+    const next = join(root, "running-preview-new");
+    const id = project("running preview", old);
+    const runningId = agent(id, { cwd: old, status: "running", kind: "lead" });
+
+    const result = cli(old, [next]);
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Project .*: running preview/);
+    assert.match(result.stdout, new RegExp(`fixture \\(lead, ${runningId}\\)`));
+    assert.match(result.stdout, /--apply refuses until every agent is closed/);
+    assert.doesNotMatch(result.stdout, /Refusals: none found during preflight\./);
+    assert.ok(existsSync(old));
+    assert.equal(existsSync(next), false);
+  });
+
   it("project mv refuses all collisions and ambiguous layouts", () => {
     const old = join(root, "collision-old");
     const next = join(root, "collision-new");
