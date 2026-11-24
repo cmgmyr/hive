@@ -22,11 +22,16 @@ describe("unknown-key refusal hints", () => {
   it("lists every matching schema key in schema order and leaves unrelated refusals unchanged", async () => {
     const { unknownKeyHint } = await import("../dist/strictInput.js");
 
-    assert.equal(unknownKeyHint(["id"], ["todo_id", "pad_id", "agent_id"]), 'id: did you mean "todo_id" or "pad_id" or "agent_id"?');
-    assert.equal(unknownKeyHint(["id"], ["todo_id", "pad_id"], ["todo_id"]), 'id: did you mean "pad_id"?');
+    assert.equal(unknownKeyHint(["id"], ["todo_id", "pad_id", "agent_id"]), 'Unrecognized key: "id"; did you mean "todo_id" or "pad_id" or "agent_id"?');
+    assert.equal(unknownKeyHint(["id"], ["todo_id", "pad_id"], ["todo_id"]), 'Unrecognized key: "id"; did you mean "pad_id"?');
     assert.equal(unknownKeyHint(["id"], ["todo_id", "pad_id"], ["todo_id", "pad_id"]), undefined);
+    assert.equal(unknownKeyHint(["id"], ["todo_id", "project_id"]), 'Unrecognized key: "id"; did you mean "todo_id"?');
+    assert.equal(
+      unknownKeyHint(["id", "tag"], ["todo_id", "tags", "project_id"]),
+      'Unrecognized keys: "id", "tag"; "id": did you mean "todo_id"?; "tag": did you mean "tags"?',
+    );
     assert.equal(unknownKeyHint(["typo"], ["todo_id", "title"]), undefined);
-    assert.equal(unknownKeyHint(["tag"], ["tag", "tags"]), 'tag: did you mean "tags"?');
+    assert.equal(unknownKeyHint(["tag"], ["tag", "tags"]), 'Unrecognized key: "tag"; did you mean "tags"?');
   });
 
   it("a todo_get id typo names todo_id and a todo_update id typo cannot change the todo", async () => {
@@ -37,7 +42,7 @@ describe("unknown-key refusal hints", () => {
     } catch (error) {
       getError = error.message;
     }
-    assert.match(getError, /id: did you mean "todo_id" or "project_id"\?/);
+    assert.match(getError, /Unrecognized key: "id"; did you mean "todo_id"\?/);
 
     let updateError;
     try {
@@ -45,7 +50,7 @@ describe("unknown-key refusal hints", () => {
     } catch (error) {
       updateError = error.message;
     }
-    assert.match(updateError, /id: did you mean "project_id"\?/);
+    assert.equal(updateError, 'MCP error -32602: Input validation error: Invalid arguments for tool todo_update: Unrecognized key: "id"');
     assert.equal((await mcp.call("todo_get", { todo_id })).title, "original title");
   });
 

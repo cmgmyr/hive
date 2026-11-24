@@ -16,15 +16,23 @@ const UNKNOWN_KEY_ALIASES = new Map<string, string[]>([
 
 export function unknownKeyHint(keys: string[], shapeKeys: string[], suppliedKeys: string[] = []): string | undefined {
   const supplied = new Set(suppliedKeys);
-  const suggestions = keys.flatMap((key) => {
+  const hints = keys.flatMap((key) => {
     const matches = shapeKeys.filter(
       (candidate) =>
+        candidate !== "project_id" &&
         !supplied.has(candidate) &&
         (candidate.endsWith(`_${key}`) || candidate === `${key}s` || UNKNOWN_KEY_ALIASES.get(key)?.includes(candidate)),
     );
-    return matches.length === 0 ? [] : [`${key}: did you mean ${matches.map((match) => `\"${match}\"`).join(" or ")}?`];
+    if (matches.length === 0) return [];
+    const hint = `did you mean ${matches.map((match) => `\"${match}\"`).join(" or ")}?`;
+    return keys.length === 1 ? [hint] : [`${JSON.stringify(key)}: ${hint}`];
   });
-  return suggestions.length === 0 ? undefined : suggestions.join("; ");
+  if (hints.length === 0) return undefined;
+  const refusal =
+    keys.length === 1
+      ? `Unrecognized key: ${JSON.stringify(keys[0])}`
+      : `Unrecognized keys: ${keys.map((key) => JSON.stringify(key)).join(", ")}`;
+  return `${refusal}; ${hints.join("; ")}`;
 }
 
 function strictSchemaFor(toolName: string, inputSchema: unknown): unknown {
@@ -41,8 +49,7 @@ function strictSchemaFor(toolName: string, inputSchema: unknown): unknown {
     error: (issue) => {
       if (issue.code !== "unrecognized_keys") return undefined;
       const suppliedKeys = typeof issue.input === "object" && issue.input !== null ? Object.keys(issue.input) : [];
-      const hint = unknownKeyHint(issue.keys, Object.keys(shape), suppliedKeys);
-      return hint === undefined ? undefined : hint;
+      return unknownKeyHint(issue.keys, Object.keys(shape), suppliedKeys);
     },
   });
 }
