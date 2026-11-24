@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
@@ -11,6 +11,7 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { sessionName } = await import("../dist/tmux.js");
 const { codexLaunchArgs } = await import("../dist/codexHome.js");
+const { readOnlyDenyWrite, readOnlyTmpDir } = await import("../dist/hooks.js");
 scratchGit(dirs.projectDir, "init", "-q");
 scratchGit(dirs.projectDir, "commit", "-q", "--allow-empty", "-m", "root");
 writeFileSync(join(dirs.projectDir, "hive.yml"), "agents: [claude, codex]\n");
@@ -59,12 +60,23 @@ for (const harness of ["claude", "codex"]) {
       } else {
         const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));
         assert.deepEqual(settings.permissions.deny, ["SendMessage", "ListAgents", "Edit", "Write", "NotebookEdit"]);
-        assert.deepEqual(settings.sandbox, { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, filesystem: { denyWrite: ["//"] } });
+        assert.deepEqual(settings.sandbox, {
+          enabled: true,
+          failIfUnavailable: true,
+          autoAllowBashIfSandboxed: true,
+          allowUnsandboxedCommands: false,
+          filesystem: { denyWrite: [`/${realpathSync(dirs.projectDir)}`, `/${realpathSync(join(dirs.projectDir, ".git"))}`] },
+        });
+        assert.equal(settings.env.CLAUDE_CODE_TMPDIR, readOnlyTmpDir(receipt.agent_id));
+        assert.equal(settings.env.CLAUDE_CODE_TMPDIR, `/tmp/hive-${process.getuid()}/w${receipt.agent_id}`);
+        assert.equal(settings.env.CLAUDE_CODE_TMPDIR.startsWith(fakeHome), false);
+        assert.equal(statSync(settings.env.CLAUDE_CODE_TMPDIR).mode & 0o777, 0o700);
       }
     };
     check();
     if (harness === "codex") db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("sealed-session", receipt.agent_id);
     await mcp.call("agent_park", { agent_id: receipt.agent_id });
+    if (harness === "claude") rmSync(readOnlyTmpDir(receipt.agent_id), { recursive: true, force: true });
     rmSync(argvFile, { force: true });
     await mcp.call("agent_resume", { agent_id: receipt.agent_id });
     args = await argv();
@@ -89,7 +101,11 @@ for (const harness of ["claude", "codex"]) {
         assert.equal(args.includes("--add-dir"), false);
       } else {
         const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));
-        assert.deepEqual(settings.sandbox.filesystem.denyWrite, ["//"]);
+        assert.deepEqual(settings.sandbox.filesystem.denyWrite, [
+          `/${realpathSync(dirs.projectDir)}`,
+          `/${realpathSync(join(dirs.projectDir, ".git"))}`,
+        ]);
+        assert.equal(settings.env.CLAUDE_CODE_TMPDIR, readOnlyTmpDir(receipt.agent_id));
         assert.equal(settings.sandbox.allowUnsandboxedCommands, false);
       }
     };
@@ -119,7 +135,9 @@ for (const harness of ["claude", "codex"]) {
       assert.deepEqual(args, ["--model", "test-model", "--name", "ordinary-claude", "--settings", join(dirs.dataDir, `worker-${receipt.agent_id}-hooks.json`), "--append-system-prompt-file", join(dirs.dataDir, "briefs", `agent-${receipt.agent_id}.md`), "--session-id", row.session_id, "--example"]);
       const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));
       assert.equal(settings.sandbox, undefined);
+      assert.equal(settings.env, undefined);
       assert.deepEqual(settings.permissions.deny, ["SendMessage", "ListAgents"]);
+      assert.equal(existsSync(readOnlyTmpDir(receipt.agent_id)), false);
     }
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
   });
@@ -153,4 +171,8 @@ it("read-only codex launch omits additional writable roots that the TUI refuses"
   assert.equal(args.includes("--add-dir"), false);
   assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
   assert.ok(codexLaunchArgs(dirs.projectDir).includes("--add-dir"));
+});
+
+it("a read-only worker outside git denies only its real cwd", () => {
+  assert.deepEqual(readOnlyDenyWrite(dirs.tmp), [`/${realpathSync(dirs.tmp)}`]);
 });

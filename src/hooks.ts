@@ -1,5 +1,7 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dataDir, db } from "./db.js";
 import { shellQuote } from "./tmux.js";
@@ -62,15 +64,60 @@ function stateHookSettings(): { hooks: Record<string, HookEntry[]> } {
 export function ensureWorkerHooksFile(agentId: number, options: { includePostToolUse: boolean; readOnly?: boolean }): string {
   const worker = db.prepare("SELECT cwd FROM agents WHERE id = ? AND kind = 'agent'").get(agentId) as { cwd: string } | undefined;
   if (!worker) throw new Error(`hive: worker ${agentId} does not exist`);
+  const privateTmpDir = options.readOnly ? readOnlyTmpDir(agentId) : undefined;
+  if (privateTmpDir) {
+    mkdirSync(privateTmpDir, { recursive: true, mode: 0o700 });
+    chmodSync(privateTmpDir, 0o700);
+  }
   const settings = {
     ...stateHookSettings(),
     statusLine: statusLineEntry(effectiveClaudeStatusLine(worker.cwd)),
     permissions: { deny: ["SendMessage", "ListAgents", ...(options.readOnly ? ["Edit", "Write", "NotebookEdit"] : [])] },
-    ...(options.readOnly ? { sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, filesystem: { denyWrite: ["//"] } } } : {}),
+    ...(options.readOnly
+      ? {
+          sandbox: {
+            enabled: true,
+            failIfUnavailable: true,
+            autoAllowBashIfSandboxed: true,
+            allowUnsandboxedCommands: false,
+            filesystem: { denyWrite: readOnlyDenyWrite(worker.cwd) },
+          },
+          env: { CLAUDE_CODE_TMPDIR: privateTmpDir! },
+        }
+      : {}),
     crossSessionInbound: "refuse",
   };
   if (options.includePostToolUse) settings.hooks.PostToolUse = [hookEntry("post_tool_use", "claude")];
   const path = join(dataDir, `worker-${agentId}-hooks.json`);
   writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
   return path;
+}
+
+export function readOnlyTmpDir(agentId: number): string {
+  return join("/tmp", `hive-${process.getuid!()}`, `w${agentId}`);
+}
+
+export function readOnlyDenyWrite(cwd: string): string[] {
+  const realCwd = realpathSync(cwd);
+  const paths = [claudeSandboxPath(realCwd)];
+  try {
+    const commonDir = execFileSync(
+      "git",
+      ["-C", realCwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    if (commonDir) {
+      const realCommonDir = realpathSync(commonDir);
+      const sandboxPath = claudeSandboxPath(realCommonDir);
+      if (!paths.includes(sandboxPath)) paths.push(sandboxPath);
+    }
+  } catch {
+    // A missing git repository leaves the cwd as the only denied path.
+  }
+  return paths;
+}
+
+function claudeSandboxPath(path: string): string {
+  if (path === "/") throw new Error("hive: read_only workers cannot use / as their working directory");
+  return `/${path}`;
 }
