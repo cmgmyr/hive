@@ -504,6 +504,10 @@ function codexConfigFiles(project: Project): string[] {
   return [...files];
 }
 
+function formatRunningAgents(running: MovePlan["running"]): string {
+  return running.map((row) => `${row.name} (${row.kind}, ${row.id})`).join(", ");
+}
+
 function planMove(project: Project, targetPath: string): MovePlan {
   const oldRoot = project.path;
   const newRoot = canonicalExistingOrChild(targetPath);
@@ -551,7 +555,7 @@ function printPlan(plan: MovePlan): void {
   console.log(plan.fileChanges.length ? `Config files to update: ${plan.fileChanges.map((item) => item.path).join(", ")}` : "Config files: no path keys to update.");
   console.log(`Claude config: ${join(resolve(process.env.CLAUDE_CONFIG_DIR || homedir()), ".claude.json")}`);
   if (plan.running.length) {
-    console.log(`Running hive agents: ${plan.running.map((row) => `${row.name} (${row.kind}, ${row.id})`).join(", ")}; --apply refuses until every agent is closed.`);
+    console.log(`Running hive agents: ${formatRunningAgents(plan.running)}; --apply refuses until every agent is closed.`);
   } else console.log("Refusals: none found during preflight.");
   console.log(`Codex guidance: Use codex resume --all to find sessions saved under the old path.`);
   console.log("Precondition: exit Claude Code and Codex before applying; hive does not detect or stop them.");
@@ -675,7 +679,7 @@ export async function cmdProjectMove(argv: string[]): Promise<void> {
   const project = selectProject(options.projectId);
   const plan = planMove(project, target);
   if (options.apply && plan.running.length) {
-    throw new Error(`Project ${plan.project.id} has running hive agents: ${plan.running.map((row) => `${row.name} (${row.kind}, ${row.id})`).join(", ")}; close every agent before applying a move.`);
+    throw new Error(`Project ${plan.project.id} has running hive agents: ${formatRunningAgents(plan.running)}; close every agent before applying a move.`);
   }
   printPlan(plan);
   if (!options.apply) {
