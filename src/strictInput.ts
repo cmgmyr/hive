@@ -8,6 +8,22 @@ function isBuiltSchema(value: unknown): boolean {
   return typeof value === "object" && value !== null && ("_zod" in value || "_def" in value);
 }
 
+const UNKNOWN_KEY_ALIASES: Record<string, string[]> = {
+  message: ["text"],
+  agent: ["name"],
+  body: ["content"],
+};
+
+export function unknownKeyHint(keys: string[], shapeKeys: string[]): string | undefined {
+  const suggestions = keys.flatMap((key) => {
+    const matches = shapeKeys.filter(
+      (candidate) => candidate.endsWith(`_${key}`) || candidate === `${key}s` || UNKNOWN_KEY_ALIASES[key]?.includes(candidate),
+    );
+    return matches.length === 0 ? [] : [`${key}: did you mean ${matches.map((match) => `\"${match}\"`).join(" or ")}?`];
+  });
+  return suggestions.length === 0 ? undefined : suggestions.join("; ");
+}
+
 function strictSchemaFor(toolName: string, inputSchema: unknown): unknown {
   if (inputSchema === undefined) return undefined;
   if (isBuiltSchema(inputSchema)) {
@@ -17,7 +33,14 @@ function strictSchemaFor(toolName: string, inputSchema: unknown): unknown {
         "make your schema strict yourself and widen this check deliberately.",
     );
   }
-  return z.strictObject(inputSchema as z.ZodRawShape);
+  const shape = inputSchema as z.ZodRawShape;
+  return z.strictObject(shape, {
+    error: (issue) => {
+      if (issue.code !== "unrecognized_keys") return undefined;
+      const hint = unknownKeyHint(issue.keys, Object.keys(shape));
+      return hint === undefined ? undefined : hint;
+    },
+  });
 }
 
 type ToolCallback = (...args: unknown[]) => unknown;
