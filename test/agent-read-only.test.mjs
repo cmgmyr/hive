@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -73,7 +74,8 @@ for (const harness of ["claude", "codex"]) {
           filesystem: { denyWrite: [`/${realpathSync(dirs.projectDir)}`, `/${realpathSync(join(dirs.projectDir, ".git"))}`] },
         });
         assert.equal(settings.env.CLAUDE_CODE_TMPDIR, readOnlyTmpDir(receipt.agent_id));
-        assert.equal(settings.env.CLAUDE_CODE_TMPDIR, `/tmp/hive-${process.getuid()}/w${receipt.agent_id}`);
+        const storeHash = createHash("sha256").update(realpathSync(dirs.dataDir)).digest("hex").slice(0, 8);
+        assert.equal(settings.env.CLAUDE_CODE_TMPDIR, `/tmp/hive-${process.getuid()}/${storeHash}-w${receipt.agent_id}`);
         assert.equal(settings.env.CLAUDE_CODE_TMPDIR.startsWith(homedir()), false);
         assert.equal(statSync(settings.env.CLAUDE_CODE_TMPDIR).mode & 0o777, 0o700);
       }
@@ -182,4 +184,28 @@ it("read-only codex launch omits additional writable roots that the TUI refuses"
 
 it("a read-only worker outside git denies only its real cwd", () => {
   assert.deepEqual(readOnlyDenyWrite(dirs.tmp), [`/${realpathSync(dirs.tmp)}`]);
+});
+
+it("read-only temp paths differ between stores for the same agent id", () => {
+  const secondStore = join(dirs.tmp, "second-store");
+  mkdirSync(secondStore);
+  assert.notEqual(readOnlyTmpDir(42, dirs.dataDir), readOnlyTmpDir(42, secondStore));
+});
+
+it("agent_close removes a parked read-only Claude worker's private temp directory", gate, async () => {
+  rmSync(argvFile, { force: true });
+  const receipt = await mcp.call("agent_spawn", { name: "parked-sealed-claude", command: join(bin, "claude"), read_only: true });
+  const args = await argv();
+  await liveAgentRow(mcp, "parked-sealed-claude");
+  const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));
+  const privateTmpDir = settings.env.CLAUDE_CODE_TMPDIR;
+  assert.equal(existsSync(privateTmpDir), true);
+  await mcp.call("agent_park", { agent_id: receipt.agent_id });
+  assert.equal(existsSync(privateTmpDir), true);
+  try {
+    assert.equal((await mcp.call("agent_close", { agent_id: receipt.agent_id })).closed, true);
+    assert.equal(existsSync(privateTmpDir), false);
+  } finally {
+    rmSync(privateTmpDir, { recursive: true, force: true });
+  }
 });

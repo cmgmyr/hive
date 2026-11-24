@@ -732,7 +732,7 @@ export function closeAgentRowWithLeases(
   })();
 }
 
-function removeReadOnlyTmpDirForAgent(agentId: number): void {
+export function removeReadOnlyTmpDirForAgent(agentId: number): void {
   const row = db.prepare("SELECT kind, extra_args FROM agents WHERE id = ?").get(agentId) as
     | { kind: string; extra_args: string | null }
     | undefined;

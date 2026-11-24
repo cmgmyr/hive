@@ -62,6 +62,7 @@ import {
   parkAgentRowWithLeases,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
+  removeReadOnlyTmpDirForAgent,
   releaseParkRow,
   relayoutAfterPaneLeft,
   renameAgent,
@@ -2091,6 +2092,8 @@ export function registerAgents(server: McpServer): void {
             );
           }
 
+          removeReadOnlyTmpDirForAgent(agent.id);
+
           // Best-effort: a failed reap must not fail the close it rides on. The janitor's own
           // backstop sweep retries it (codex_home stays set until reapCodexHome actually succeeds).
           if (agent.codex_home) {
@@ -2108,6 +2111,7 @@ export function registerAgents(server: McpServer): void {
           if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
             throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
           }
+          removeReadOnlyTmpDirForAgent(agent.id);
           let releasedHome: boolean | null = null;
           if (agent.codex_home) {
             try {

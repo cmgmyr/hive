@@ -1,7 +1,7 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dataDir, db } from "./db.js";
 import { shellQuote } from "./tmux.js";
@@ -93,8 +93,9 @@ export function ensureWorkerHooksFile(agentId: number, options: { includePostToo
   return path;
 }
 
-export function readOnlyTmpDir(agentId: number): string {
-  return join("/tmp", `hive-${process.getuid!()}`, `w${agentId}`);
+export function readOnlyTmpDir(agentId: number, storeDir: string = dataDir): string {
+  const storeHash = createHash("sha256").update(realpathSync(storeDir)).digest("hex").slice(0, 8);
+  return join("/tmp", `hive-${process.getuid!()}`, `${storeHash}-w${agentId}`);
 }
 
 export function removeReadOnlyTmpDir(agentId: number): string | null {
