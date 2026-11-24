@@ -8,11 +8,11 @@ function isBuiltSchema(value: unknown): boolean {
   return typeof value === "object" && value !== null && ("_zod" in value || "_def" in value);
 }
 
-const UNKNOWN_KEY_ALIASES: Record<string, string[]> = {
-  message: ["text"],
-  agent: ["name"],
-  body: ["content"],
-};
+const UNKNOWN_KEY_ALIASES = new Map<string, string[]>([
+  ["message", ["text"]],
+  ["agent", ["name"]],
+  ["body", ["content"]],
+]);
 
 export function unknownKeyHint(keys: string[], shapeKeys: string[], suppliedKeys: string[] = []): string | undefined {
   const supplied = new Set(suppliedKeys);
@@ -20,7 +20,7 @@ export function unknownKeyHint(keys: string[], shapeKeys: string[], suppliedKeys
     const matches = shapeKeys.filter(
       (candidate) =>
         !supplied.has(candidate) &&
-        (candidate.endsWith(`_${key}`) || candidate === `${key}s` || UNKNOWN_KEY_ALIASES[key]?.includes(candidate)),
+        (candidate.endsWith(`_${key}`) || candidate === `${key}s` || UNKNOWN_KEY_ALIASES.get(key)?.includes(candidate)),
     );
     return matches.length === 0 ? [] : [`${key}: did you mean ${matches.map((match) => `\"${match}\"`).join(" or ")}?`];
   });

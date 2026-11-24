@@ -68,4 +68,14 @@ describe("unknown-key refusal hints", () => {
     }
     assert.equal(errorText, 'MCP error -32602: Input validation error: Invalid arguments for tool todo_get: Unrecognized key: "typo"');
   });
+
+  it("an unknown constructor key keeps the current refusal", async () => {
+    let errorText;
+    try {
+      await mcp.call("todo_get", { todo_id: 1, constructor: true });
+    } catch (error) {
+      errorText = error.message;
+    }
+    assert.equal(errorText, 'MCP error -32602: Input validation error: Invalid arguments for tool todo_get: Unrecognized key: "constructor"');
+  });
 });
