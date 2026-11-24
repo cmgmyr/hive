@@ -242,11 +242,21 @@ describe("hive project mv", () => {
 
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /Project .*: running preview/);
+    assert.match(result.stdout, /Checkout: .* -> .*/);
+    assert.match(result.stdout, /Git:/);
+    assert.match(result.stdout, /Claude storage:/);
+    assert.match(result.stdout, /Config files(?: to update)?:/);
+    assert.match(result.stdout, /Claude config:/);
     assert.match(result.stdout, new RegExp(`fixture \\(lead, ${runningId}\\)`));
     assert.match(result.stdout, /--apply refuses until every agent is closed/);
+    assert.match(result.stdout, /Codex guidance:/);
+    assert.match(result.stdout, /Precondition:/);
+    assert.match(result.stdout, /Recovery command:/);
     assert.doesNotMatch(result.stdout, /Refusals: none found during preflight\./);
     assert.ok(existsSync(old));
     assert.equal(existsSync(next), false);
+    assert.equal(db.prepare("SELECT path FROM projects WHERE id = ?").get(id).path, realpathSync(old));
+    assert.equal(db.prepare("SELECT status FROM agents WHERE id = ?").get(runningId).status, "running");
   });
 
   it("project mv refuses all collisions and ambiguous layouts", () => {
