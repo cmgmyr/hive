@@ -46,6 +46,16 @@ export function getAgentRow(projectId: number, id: number, notFoundHint: string)
   return row;
 }
 
+export function liveSuccessorHint(projectId: number, closed: AgentRow): string {
+  const successor = db
+    .prepare(
+      "SELECT id, name FROM agents WHERE project_id = ? AND actor_id = ? AND status = 'running' AND id != ? ORDER BY id DESC LIMIT 1",
+    )
+    .get(projectId, closed.actor_id, closed.id) as { id: number; name: string } | undefined;
+  if (!successor) return "";
+  return ` Its actor ${closed.actor_id} now runs as agent ${successor.id} ("${successor.name}"); target that agent_id or name instead.`;
+}
+
 function closedAgentNamed(
   projectId: number,
   needle: string,

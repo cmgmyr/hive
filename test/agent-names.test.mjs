@@ -421,6 +421,87 @@ describe("an exact name that belongs to a closed worker", { skip: hasTmux ? fals
   });
 });
 
+describe("closed agent_id successor hints", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  let closedId;
+  let successorId;
+
+  after(async () => {
+    if (successorId) await mcp.call("agent_close", { agent_id: successorId }).catch(() => {});
+  });
+
+  it("names a same-project running actor successor while keeping status readable and sending nothing", async () => {
+    const old = await mcp.call("agent_spawn", { name: "old-lead", command: "sleep", extra_args: ["600"] });
+    closedId = old.agent_id;
+    await liveAgentRow(mcp, "old-lead");
+    await mcp.call("agent_close", { agent_id: closedId });
+
+    const current = await mcp.call("agent_spawn", { name: "current-lead", command: "sleep", extra_args: ["600"] });
+    successorId = current.agent_id;
+    const successor = await liveAgentRow(mcp, "current-lead");
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    let otherProjectId;
+    try {
+      store.prepare("UPDATE agents SET actor_id = ? WHERE id = ?").run("lead:closed-hint", closedId);
+      store.prepare("UPDATE agents SET actor_id = ? WHERE id = ?").run("lead:closed-hint", successorId);
+      otherProjectId = store
+        .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
+        .get("foreign-hint", join(dirs.tmp, "foreign-project")).id;
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+           VALUES (?, ?, ?, '', 'sleep 600', ?, 'agent', 'running')`,
+        )
+        .run(otherProjectId, "lead:closed-hint", "foreign-lead", dirs.projectDir);
+    } finally {
+      store.close();
+    }
+
+    const before = await mcp.call("agent_status", { agent_id: successorId });
+    const messagesBefore = new Database(join(dirs.dataDir, "hive.db"));
+    const messageCount = messagesBefore
+      .prepare("SELECT COUNT(*) AS count FROM agent_messages WHERE project_id = ?")
+      .get(projectId).count;
+    messagesBefore.close();
+    await assert.rejects(
+      mcp.call("agent_send", { agent_id: closedId, text: "must not reach the successor" }),
+      (error) =>
+        error.message ===
+        `Agent ${closedId} ("old-lead") is closed. Its actor lead:closed-hint now runs as agent ${successorId} ("current-lead"); target that agent_id or name instead.`,
+    );
+    assert.equal((await mcp.call("agent_status", { agent_id: closedId })).status, "closed");
+    const messagesAfter = new Database(join(dirs.dataDir, "hive.db"));
+    assert.equal(messagesAfter.prepare("SELECT COUNT(*) AS count FROM agent_messages WHERE project_id = ?").get(projectId).count, messageCount);
+    messagesAfter.close();
+    const after = await mcp.call("agent_status", { agent_id: successorId });
+    assert.equal(after.name, before.name);
+    assert.equal(after.tail, before.tail);
+  });
+
+  it("keeps the plain refusal when the only same-actor running row is in another project", async () => {
+    const old = await mcp.call("agent_spawn", { name: "orphaned-lead", command: "sleep", extra_args: ["600"] });
+    await liveAgentRow(mcp, "orphaned-lead");
+    await mcp.call("agent_close", { agent_id: old.agent_id });
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      store.prepare("UPDATE agents SET actor_id = ? WHERE id = ?").run("lead:foreign-only", old.agent_id);
+      const foreign = store
+        .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
+        .get("foreign-only", join(dirs.tmp, "foreign-only-project"));
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+           VALUES (?, ?, ?, '', 'sleep 600', ?, 'agent', 'running')`,
+        )
+        .run(foreign.id, "lead:foreign-only", "foreign-only-lead", dirs.projectDir);
+    } finally {
+      store.close();
+    }
+    await assert.rejects(mcp.call("agent_send", { agent_id: old.agent_id, text: "no successor here" }), {
+      message: `Agent ${old.agent_id} ("orphaned-lead") is closed.`,
+    });
+  });
+});
+
 describe("case folding outside ASCII", { skip: hasTmux ? false : "tmux is not installed" }, () => {
 
   after(async () => {

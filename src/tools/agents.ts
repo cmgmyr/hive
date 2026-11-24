@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
-import { CLOSED_ROW_ORDER, findAgent, getAgentRow, notOwnedError, observeOwnership, probeFailed, PROBE_FAILED_NOTE, REISSUED_PANE_NOTE, summaryLiveness, UNVERIFIED_OWNERSHIP_NOTE, type AgentRow } from "../agentRecords.js";
+import { CLOSED_ROW_ORDER, findAgent, getAgentRow, liveSuccessorHint, notOwnedError, observeOwnership, probeFailed, PROBE_FAILED_NOTE, REISSUED_PANE_NOTE, summaryLiveness, UNVERIFIED_OWNERSHIP_NOTE, type AgentRow } from "../agentRecords.js";
 export { CLOSED_ROW_ORDER, findAgent, getAgentRow, notOwnedError, observeOwnership, probeFailed, PROBE_FAILED_NOTE, REISSUED_PANE_NOTE, summaryLiveness, UNVERIFIED_OWNERSHIP_NOTE, type AgentRow } from "../agentRecords.js";
 
 import { confirmQueenWrite } from "../queenAudit.js";
@@ -313,7 +313,7 @@ function stillOwnsPane(agent: AgentRow, action: string): boolean {
 
 function requireLive(agent: AgentRow): void {
   if (agent.status !== "running") {
-    throw new Error(`Agent ${agent.id} ("${agent.name}") is closed.`);
+    throw new Error(`Agent ${agent.id} ("${agent.name}") is closed.${liveSuccessorHint(agent.project_id, agent)}`);
   }
   const ownership = observeOwnership(agent);
   if (ownership !== "live") throw notOwnedError(agent, ownership);
