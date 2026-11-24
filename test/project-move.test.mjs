@@ -216,13 +216,20 @@ describe("hive project mv", () => {
     assert.match(result.stdout, /exact checkout path/);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get().n, projectsBeforeMissing);
 
-    agent(id, { cwd: old, status: "running", kind: "lead" });
+    const runningAgent = agent(id, { cwd: old, status: "running", kind: "lead" });
     result = cli(old, [next, "--apply"]);
     assert.notEqual(result.status, 0);
     assert.match(result.stdout, /has running hive agents: fixture \(lead, \d+\); close every agent before applying a move\./);
     assert.ok(existsSync(old));
     assert.equal(existsSync(next), false);
     assert.equal(db.prepare("SELECT path FROM projects WHERE id = ?").get(id).path, realpathSync(old));
+
+    db.prepare("UPDATE agents SET status = 'closed' WHERE id = ?").run(runningAgent);
+    result = cli(old, [next, "--apply"]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(existsSync(old), false);
+    assert.ok(existsSync(next));
+    assert.equal(db.prepare("SELECT path FROM projects WHERE id = ?").get(id).path, realpathSync(next));
   });
 
   it("project mv preview with a running agent prints the plan and names the agent", () => {
