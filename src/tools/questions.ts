@@ -36,7 +36,7 @@ export function registerQuestions(server: McpServer): void {
     "question_ask",
     {
       description:
-        "Record an open question for the human, keyed to this project and to you as the asker. kind=choice takes 2-4 options (each label, description, recommended; exactly one recommended) and a header of 12 characters or fewer (longer is cut at a word boundary and reported as header_truncated); kind=free_text takes just the question and header. Every question carries default_answer: for a choice it is the recommended option's label. Pass ref (a todo id or PR number) to dedupe: asking again with a ref that already has a PENDING question in this project updates that row instead of adding one. The receipt lists other pending questions in this project that look similar (same normalized text, or at least half their longer words shared), so you can question_update one instead. The record is only stored: put the question to the human yourself, in your own turn. You must be a session an answer can be woken back to. When the question is answered, an ordinary wake carrying the answer is queued to you; read the record with question_get.",
+        "Record an open question for the human, keyed to this project and to you as the asker. kind=choice takes 2-4 options (each label, description, recommended; exactly one recommended) and a header of 12 characters or fewer (longer is cut at a word boundary and reported as header_truncated); kind=free_text takes just the question and header. Every question carries default_answer: for a choice it is the recommended option's label; a different default_answer is replaced with the recommended label and reported as default_answer_replaced. Pass ref (a todo id or PR number) to dedupe: asking again with a ref that already has a PENDING question in this project updates that row instead of adding one. The receipt lists other pending questions in this project that look similar (same normalized text, or at least half their longer words shared), so you can question_update one instead. The record is only stored: put the question to the human yourself, in your own turn. You must be a session an answer can be woken back to. When the question is answered, an ordinary wake carrying the answer is queued to you; read the record with question_get.",
       annotations: writes,
       inputSchema: {
         kind: z.enum(["choice", "free_text"]),
@@ -51,6 +51,7 @@ export function registerQuestions(server: McpServer): void {
         created: z.boolean(),
         similar_question_ids: z.array(idParam),
         header_truncated: z.string().optional(),
+        default_answer_replaced: z.strictObject({ given: z.string(), stored: z.string() }).optional(),
       },
     },
     (args) =>
@@ -94,7 +95,7 @@ export function registerQuestions(server: McpServer): void {
     "question_update",
     {
       description:
-        "Edit a pending question's text (question, header, options, default_answer; the whole result is revalidated) or move it out of pending with state=defaulted (you acted on your default) or state=withdrawn (moot). A defaulted question can still be withdrawn. Moving state needs the asking session or the human; an answered or withdrawn question cannot be changed. The ref, asker and wake target never change.",
+        "Edit a pending question's text (question, header, options, default_answer; the whole result is revalidated, and a mismatched choice default is replaced with the recommended label and reported as default_answer_replaced) or move it out of pending with state=defaulted (you acted on your default) or state=withdrawn (moot). A defaulted question can still be withdrawn. Moving state needs the asking session or the human; an answered or withdrawn question cannot be changed. The ref, asker and wake target never change.",
       annotations: writes,
       inputSchema: {
         question_id: idParam,
@@ -104,7 +105,12 @@ export function registerQuestions(server: McpServer): void {
         default_answer: z.string().optional(),
         state: z.enum(["defaulted", "withdrawn"]).optional(),
       },
-      outputSchema: { question_id: idParam, state: stateParam, header_truncated: z.string().optional() },
+      outputSchema: {
+        question_id: idParam,
+        state: stateParam,
+        header_truncated: z.string().optional(),
+        default_answer_replaced: z.strictObject({ given: z.string(), stored: z.string() }).optional(),
+      },
     },
     (args) =>
       run(() => {

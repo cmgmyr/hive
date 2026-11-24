@@ -124,6 +124,7 @@ describe("question tools, over real MCP", () => {
     const input = choice({ question: "Which no-default option is recommended?" });
     delete input.default_answer;
     const made = await asker.call("question_ask", input);
+    assert.equal(Object.hasOwn(made, "default_answer_replaced"), false);
     assert.equal((await asker.call("question_get", { question_id: made.question_id })).default_answer, "Opt0");
   });
 
@@ -208,10 +209,12 @@ describe("question tools, over real MCP", () => {
     assert.match(await refusal(asker, "question_ask", choice({ options })), /exactly one option must be recommended, got 0/);
   });
 
-  it("a differing choice default explains that it can be omitted", { skip }, async () => {
-    const error = await refusal(asker, "question_ask", choice({ default_answer: "Opt1" }));
-    assert.match(error, /default_answer must be the recommended option's label/);
-    assert.match(error, /or omit default_answer to use it/);
+  it("a choice question with a mismatched default stores the recommended label and says so", { skip }, async () => {
+    const made = await asker.call("question_ask", choice({ default_answer: "Opt1" }));
+    assert.deepEqual(made.default_answer_replaced, { given: "Opt1", stored: "Opt0" });
+    assert.equal((await asker.call("question_get", { question_id: made.question_id })).default_answer, "Opt0");
+    const matching = await asker.call("question_ask", choice({ question: "A matching choice default has no replacement", default_answer: "Opt0" }));
+    assert.equal(Object.hasOwn(matching, "default_answer_replaced"), false);
   });
 
   it("two recommended options are still refused", { skip }, async () => {
@@ -349,7 +352,6 @@ describe("question tools, over real MCP", () => {
       "two recommended": choice({ options: opts(3).map((o, i) => ({ ...o, recommended: i < 2 })) }),
       "blank header": choice({ header: "   " }),
       "free text without a header": (({ header, ...rest }) => rest)(freeText()),
-      "default is not the recommended label": choice({ default_answer: "Opt1" }),
       "duplicate labels": choice({ options: opts(3).map((o) => ({ ...o, label: "Same" })), default_answer: "Same" }),
       "blank label": choice({ options: [{ label: " ", description: "x", recommended: true }, ...opts(2).slice(1)], default_answer: " " }),
       "blank description": choice({ options: [{ ...opts(2)[0], description: "" }, opts(2)[1]] }),
@@ -421,7 +423,8 @@ describe("question tools, over real MCP", () => {
 
   it("update merges and revalidates the whole payload", { skip }, async () => {
     const id = (await asker.call("question_ask", choice({ question: "Merge validation probe wording" }))).question_id;
-    await refusal(asker, "question_update", { question_id: id, default_answer: "Opt1" });
+    const replacement = await asker.call("question_update", { question_id: id, default_answer: "Opt1" });
+    assert.deepEqual(replacement.default_answer_replaced, { given: "Opt1", stored: "Opt0" });
     const cut = await asker.call("question_update", { question_id: id, header: "thirteen char" });
     assert.equal(cut.header_truncated, "thirteen");
     await refusal(asker, "question_update", { question_id: id, options: opts(1) });
@@ -437,7 +440,8 @@ describe("question tools, over real MCP", () => {
 
   it("question_update moving recommended without default_answer follows it", { skip }, async () => {
     const id = (await asker.call("question_ask", choice({ question: "Move the recommended choice?" }))).question_id;
-    await asker.call("question_update", { question_id: id, options: opts(3, 2) });
+    const updated = await asker.call("question_update", { question_id: id, options: opts(3, 2) });
+    assert.equal(Object.hasOwn(updated, "default_answer_replaced"), false);
     const got = await asker.call("question_get", { question_id: id });
     assert.equal(got.default_answer, "Opt2");
   });

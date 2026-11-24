@@ -49,6 +49,18 @@ type ValidQuestionInput =
   | { kind: "choice"; question: string; header: string; options: QuestionOption[]; default_answer: string; ref?: QuestionRef }
   | { kind: "free_text"; question: string; header: string; default_answer: string; ref?: QuestionRef };
 
+type DefaultAnswerReplacement = { given: string; stored: string };
+
+function replaceChoiceDefault(input: ValidQuestionInput): { input: ValidQuestionInput; replaced?: DefaultAnswerReplacement } {
+  if (input.kind !== "choice") return { input };
+  const recommended = input.options.find((option) => option.recommended)?.label;
+  if (recommended === undefined || input.default_answer === recommended) return { input };
+  return {
+    input: { ...input, default_answer: recommended },
+    ...(input.default_answer === undefined ? {} : { replaced: { given: input.default_answer, stored: recommended } }),
+  };
+}
+
 const QUESTION_STATE_CONFLICT = "QUESTION_STATE_CONFLICT";
 const HEADER_MAX_CHARS = 12;
 const MIN_OPTIONS = 2;
@@ -207,12 +219,14 @@ export function askQuestion(
   projectId: number,
   actor: string,
   input: QuestionInput,
-): { question_id: number; created: boolean; similar_question_ids: number[]; header_truncated?: string } {
+): { question_id: number; created: boolean; similar_question_ids: number[]; header_truncated?: string; default_answer_replaced?: DefaultAnswerReplacement } {
   const fitted = fitHeader(input.header);
   let validInput: ValidQuestionInput = { ...input, header: fitted.header } as ValidQuestionInput;
   if (validInput.kind === "choice" && validInput.default_answer === undefined) {
     validInput = { ...validInput, default_answer: validInput.options.find((option) => option.recommended)?.label ?? "" };
   }
+  const normalized = replaceChoiceDefault(validInput);
+  validInput = normalized.input;
   validateInput(validInput);
   const refTaken = validInput.ref !== undefined && pendingIdForRef(projectId, validInput.ref) !== undefined;
   let askerChecked = false;
@@ -231,6 +245,7 @@ export function askQuestion(
     created,
     similar_question_ids: similarPendingIds(projectId, id, validInput.question),
     ...(fitted.truncated ? { header_truncated: fitted.header } : {}),
+    ...(normalized.replaced ? { default_answer_replaced: normalized.replaced } : {}),
   };
 }
 
@@ -260,7 +275,7 @@ export function pendingQuestionCount(projectId: number): number {
 const TEXT_PATCH_KEYS = ["question", "header", "options", "default_answer"] as const;
 
 const patchQuestion = db.transaction(
-  (projectId: number, actor: string, id: number, patch: QuestionPatch): { question_id: number; state: QuestionState; header_truncated?: string } => {
+  (projectId: number, actor: string, id: number, patch: QuestionPatch): { question_id: number; state: QuestionState; header_truncated?: string; default_answer_replaced?: DefaultAnswerReplacement } => {
     const current = toRecord(fetchRow(projectId, id));
     const editsText = TEXT_PATCH_KEYS.some((k) => patch[k] !== undefined);
     if (editsText && current.state !== "pending") {
@@ -279,6 +294,7 @@ const patchQuestion = db.transaction(
       }
     }
     let merged: ValidQuestionInput | null = null;
+    let defaultAnswerReplaced: DefaultAnswerReplacement | undefined;
     const fitted = patch.header === undefined ? null : fitHeader(patch.header);
     if (editsText) {
       if (current.kind === "free_text" && patch.options !== undefined) throw new Error("a free_text question takes no options.");
@@ -290,10 +306,13 @@ const patchQuestion = db.transaction(
           : current.default_answer),
         ...(current.ref ? { ref: current.ref } : {}),
       };
-      merged =
+      const candidate: ValidQuestionInput =
         current.kind === "choice"
           ? { kind: "choice", ...base, options: patch.options ?? (current.options as QuestionOption[]) }
           : { kind: "free_text", ...base };
+      const normalized = replaceChoiceDefault(candidate);
+      merged = normalized.input;
+      defaultAnswerReplaced = normalized.replaced;
       validateInput(merged);
     }
     const sets: string[] = ["updated_at = datetime('now')", "updated_by = ?"];
@@ -311,6 +330,7 @@ const patchQuestion = db.transaction(
       question_id: id,
       state: patch.state ?? current.state,
       ...(fitted?.truncated ? { header_truncated: fitted.header } : {}),
+      ...(defaultAnswerReplaced ? { default_answer_replaced: defaultAnswerReplaced } : {}),
     };
   },
 );
@@ -320,7 +340,7 @@ export function updateQuestion(
   actor: string,
   id: number,
   patch: QuestionPatch,
-): { question_id: number; state: QuestionState; header_truncated?: string } {
+): { question_id: number; state: QuestionState; header_truncated?: string; default_answer_replaced?: DefaultAnswerReplacement } {
   if (Object.keys(patch).filter((k) => (patch as Record<string, unknown>)[k] !== undefined).length === 0) {
     throw new Error("an empty patch changes nothing; pass at least one field to change.");
   }
