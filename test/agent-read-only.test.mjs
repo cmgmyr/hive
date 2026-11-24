@@ -83,6 +83,7 @@ for (const harness of ["claude", "codex"]) {
     check();
     assert.equal((await mcp.call("agent_status", { agent_id: receipt.agent_id })).read_only, true);
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
+    if (harness === "claude") assert.equal(existsSync(readOnlyTmpDir(receipt.agent_id)), false);
   });
 
   it(`${harness} read-only planning seat accepts effort arguments and preserves them on resume`, gate, async () => {
@@ -119,6 +120,7 @@ for (const harness of ["claude", "codex"]) {
     check();
     assert.equal((await mcp.call("agent_status", { agent_id: receipt.agent_id })).read_only, true);
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
+    if (harness === "claude") assert.equal(existsSync(readOnlyTmpDir(receipt.agent_id)), false);
   });
 
   it(`${harness} ordinary spawn keeps the existing argv and config permissions`, gate, async () => {

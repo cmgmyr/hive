@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { realpathSync } from "node:fs";
@@ -95,6 +95,15 @@ export function ensureWorkerHooksFile(agentId: number, options: { includePostToo
 
 export function readOnlyTmpDir(agentId: number): string {
   return join("/tmp", `hive-${process.getuid!()}`, `w${agentId}`);
+}
+
+export function removeReadOnlyTmpDir(agentId: number): string | null {
+  try {
+    rmSync(readOnlyTmpDir(agentId), { recursive: true, force: true });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 export function readOnlyDenyWrite(cwd: string): string[] {

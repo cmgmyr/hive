@@ -7,6 +7,7 @@ import { dataDir, db } from "./db.js";
 import { cancelWorkerLeaseWaits, releaseWorkerLeases } from "./leaseStore.js";
 import { loadProjectYml } from "./projectYml.js";
 import { WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
+import { removeReadOnlyTmpDir } from "./hooks.js";
 import {
   applyLayout,
   claimInitialWindow,
@@ -678,6 +679,8 @@ export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string):
       .get(agentId, codexHome, `-${WORKER_RECOVERY_RETENTION_SECONDS} seconds`) as { transcript_path: string } | undefined;
     if (!row) return null;
 
+    removeReadOnlyTmpDirForAgent(agentId);
+
     const oldTranscriptPath = row.transcript_path ?? "";
     const dest = oldTranscriptPath ? preservedRolloutPath(codexHome, oldTranscriptPath) : undefined;
     const homeExisted = existsSync(codexHomeDir(codexHome));
@@ -720,10 +723,20 @@ export function closeAgentRowWithLeases(
             )
             .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
     if (info.changes === 0) return { closed: false, released_leases: [] };
+    removeReadOnlyTmpDirForAgent(agentId);
     if (options.releaseLeases === false) cancelWorkerLeaseWaits(agentId);
     return {
       closed: true,
       released_leases: options.releaseLeases === false ? [] : releaseWorkerLeases(agentId),
     };
   })();
+}
+
+function removeReadOnlyTmpDirForAgent(agentId: number): void {
+  const row = db.prepare("SELECT kind, extra_args FROM agents WHERE id = ?").get(agentId) as
+    | { kind: string; extra_args: string | null }
+    | undefined;
+  if (row?.kind !== "agent" || !storedLaunchOptions(row.extra_args).readOnly) return;
+  const error = removeReadOnlyTmpDir(agentId);
+  if (error) process.stderr.write(`hive: could not remove read-only worker ${agentId} private temp dir: ${error}\n`);
 }
