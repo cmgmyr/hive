@@ -25,7 +25,7 @@
 - `agent_park` no longer ends a live worker closed instead of parked. Another hive session's cleanup could close the worker between the park killing its pane and recording the park, which left the worker with no parked branch. The park now holds the store's write lock across both steps.
 - `question_ask` and `question_update` accept a header over 12 characters. They cut it at a word boundary and report the stored value as `header_truncated`.
 - A choice question can leave `recommended` off the options that are not recommended; it counts as false. Exactly one option must still be recommended.
-- A choice question can omit `default_answer`; it takes the recommended option's label. A different given value is replaced with the recommended label and reported in the receipt. A free-text question still needs one.
+- A choice question can omit `default_answer`; it takes the recommended option's label. A given value that differs is still refused. A free-text question still needs one.
 - `question_answer` and `hive answer` accept a repeat of the stored answer and return `already_answered: true` instead of an error. A different answer, different notes, or a withdrawn question still refuses.
 - `todo_create` and `todo_update` accept a slug over 40 characters. They cut it at a word boundary and report the stored value as `slug_truncated`.
 - When `pad_edit` cannot find `old_text`, the error names the pad's current revision. If the text matches once when whitespace is ignored, it also names the line where it starts. The edit is not applied.
